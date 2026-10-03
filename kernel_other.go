@@ -73,7 +73,8 @@ func (k *simKernel) Checks(c *Config) []Check {
 		{"WireGuard interface", true, c.Server.Interface + " is up"},
 		{"IPv4 forwarding", true, "net.ipv4.ip_forward=1"},
 		{"nftables rules", true, "table inet " + appName + " present"},
-		{"Uplink", true, "IPv4 via eth0"},
+		{"IPv4 uplink", true, "via eth0"},
+		{"Public IPv4", true, "203.0.113.10"},
 	}
 }
 

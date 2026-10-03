@@ -287,6 +287,37 @@ func lanNetworks(uplink string) []netip.Prefix {
 	return out
 }
 
+// publicAddr reports the uplink's address for the health check: the first
+// public one, or else the first private one, marked as behind NAT. It reads
+// the interface rather than asking an outside service.
+func publicAddr(uplink string, v6 bool) (bool, string) {
+	l, err := netlink.LinkByName(uplink)
+	if err != nil {
+		return false, uplink + " not found"
+	}
+	family := netlink.FAMILY_V4
+	if v6 {
+		family = netlink.FAMILY_V6
+	}
+	addrs, _ := netlink.AddrList(l, family)
+	var private string
+	for _, a := range addrs {
+		if !a.IP.IsGlobalUnicast() {
+			continue
+		}
+		if !a.IP.IsPrivate() {
+			return true, a.IP.String()
+		}
+		if private == "" {
+			private = a.IP.String()
+		}
+	}
+	if private != "" {
+		return true, private + " (private, behind NAT)"
+	}
+	return false, "no address on " + uplink
+}
+
 func readSysctl(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -313,7 +344,19 @@ func (k *linuxKernel) Checks(c *Config) []Check {
 	ok, detail := firewallPresent()
 	out = append(out, Check{"nftables rules", ok, detail})
 	up4 := k.Uplink(c, false)
-	out = append(out, Check{"Uplink", up4 != "", map[bool]string{true: "IPv4 via " + up4, false: "no default route found"}[up4 != ""]})
+	out = append(out, Check{"IPv4 uplink", up4 != "", map[bool]string{true: "via " + up4, false: "no default route found"}[up4 != ""]})
+	if up4 != "" {
+		ok, detail := publicAddr(up4, false)
+		out = append(out, Check{"Public IPv4", ok, detail})
+	}
+	if c.Server.IPv6Enabled {
+		up6 := k.Uplink(c, true)
+		out = append(out, Check{"IPv6 uplink", up6 != "", map[bool]string{true: "via " + up6, false: "no default route found"}[up6 != ""]})
+		if up6 != "" {
+			ok, detail := publicAddr(up6, true)
+			out = append(out, Check{"Public IPv6", ok, detail})
+		}
+	}
 	return out
 }
 
