@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -365,5 +367,66 @@ func TestWriteIfChanged(t *testing.T) {
 	}
 	if ch, _ := writeIfChanged(p, "b\n", 0o644); !ch {
 		t.Fatal("new content should change")
+	}
+}
+
+func TestStatsRetention(t *testing.T) {
+	s := &Stats{data: statsFile{Peers: map[string]*peerStats{}}}
+	now := time.Date(2026, 10, 3, 15, 30, 0, 0, time.Local)
+	ps := &peerStats{}
+	for h := 0; h < 72; h++ {
+		ps.Hourly = append(ps.Hourly, bucket{T: hourStart(now.Add(-time.Duration(71-h) * time.Hour)), Rx: 1})
+	}
+	for d := 0; d < 30; d++ {
+		ps.Daily = append(ps.Daily, bucket{T: dayStart(now.AddDate(0, 0, d-29)), Rx: 1})
+	}
+	s.data.Peers["p"] = ps
+	s.prune(StatsConfig{HourlyHours: 24, DailyDays: 7}, now)
+	if len(ps.Hourly) != 24 || ps.Hourly[23].T != hourStart(now) {
+		t.Fatalf("hourly kept %d", len(ps.Hourly))
+	}
+	if len(ps.Daily) != 7 || ps.Daily[6].T != dayStart(now) {
+		t.Fatalf("daily kept %d", len(ps.Daily))
+	}
+	if !s.dirty {
+		t.Fatal("pruning should mark stats dirty")
+	}
+}
+
+func TestLogSetLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.jsonl")
+	w, err := newRotatingWriter(path, 1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	for i := 1; i <= 5; i++ {
+		if err := os.WriteFile(fmt.Sprintf("%s.%d", path, i), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.SetLimits(2, 2)
+	for i := 1; i <= 5; i++ {
+		_, err := os.Stat(fmt.Sprintf("%s.%d", path, i))
+		if exists := err == nil; exists != (i <= 2) {
+			t.Errorf("file .%d exists=%v", i, exists)
+		}
+	}
+}
+
+func TestRetentionValidation(t *testing.T) {
+	c := testConfig(t)
+	for name, mutate := range map[string]func(c *Config){
+		"log size":  func(c *Config) { c.Log.MaxSizeMB = 0 },
+		"log files": func(c *Config) { c.Log.MaxFiles = 101 },
+		"log level": func(c *Config) { c.Log.Level = "loud" },
+		"hourly":    func(c *Config) { c.Stats.HourlyHours = 12 },
+		"daily":     func(c *Config) { c.Stats.DailyDays = 5000 },
+	} {
+		cc := c.clone()
+		mutate(cc)
+		if cc.validate() == nil {
+			t.Errorf("%s: expected an error", name)
+		}
 	}
 }

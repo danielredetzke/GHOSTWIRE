@@ -76,6 +76,18 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// SetLimits changes rotation size and file count at runtime. Rotated files
+// beyond the new count are deleted.
+func (w *rotatingWriter) SetLimits(maxMB, maxFiles int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.maxBytes = int64(maxMB) << 20
+	for i := maxFiles + 1; i <= maxLogFiles+1; i++ {
+		_ = os.Remove(fmt.Sprintf("%s.%d", w.path, i))
+	}
+	w.maxFiles = maxFiles
+}
+
 func (w *rotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -786,10 +786,7 @@
 
   // ---------- server ----------
 
-  const DNS_PRESETS = [
-    ['Quad9', '9.9.9.9, 149.112.112.112'], ['Cloudflare', '1.1.1.1, 1.0.0.1'], ['Google', '8.8.8.8, 8.8.4.4'],
-    ['OpenDNS', '208.67.222.222, 208.67.220.220'], ['DNS.WATCH', '84.200.69.80, 84.200.70.40'],
-  ];
+  const DNS_PRESETS = [['Quad9', '9.9.9.9, 149.112.112.112']];
 
   async function viewServer(wrap) {
     const [srv, st] = await Promise.all([api('GET', '/server'), api('GET', '/status')]);
@@ -1043,6 +1040,40 @@
       try { await api('PATCH', '/settings', { log: { ...s.log, level: e.target.value } }); s.log.level = e.target.value; toast('Log level: ' + e.target.value); } catch (x) { toast(x.message, true); }
     } }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l, selected: s.log.level === l }, l)));
 
+    // data retention
+    const presetSelect = (id, value, presets, unit) => {
+      const opts = presets.some(([v]) => v === value) ? presets : [...presets, [value, value + ' ' + unit]].sort((a, b) => a[0] - b[0]);
+      return h('select', { id }, opts.map(([v, t]) => h('option', { value: String(v), selected: v === value }, t)));
+    };
+    const logSize = h('input', { id: 'rs', type: 'number', min: '1', max: '1000', value: s.log.maxSizeMB, inputMode: 'numeric' });
+    const logFiles = h('input', { id: 'rf', type: 'number', min: '1', max: '100', value: s.log.maxFiles, inputMode: 'numeric' });
+    const hourly = presetSelect('rh', s.stats.hourlyHours, [[24, '1 day'], [48, '2 days'], [168, '7 days'], [336, '14 days'], [744, '31 days']], 'hours');
+    const daily = presetSelect('rd', s.stats.dailyDays, [[30, '30 days'], [90, '90 days'], [180, '6 months'], [400, '13 months'], [730, '2 years'], [1825, '5 years'], [3660, '10 years']], 'days');
+    const diskHint = h('span', { class: 'hint' });
+    const drawDiskHint = () => {
+      const mb = Number(logSize.value) * (Number(logFiles.value) + 1);
+      diskHint.textContent = mb > 0 ? 'The log uses up to ' + mb + ' MB on disk (current file plus kept files).' : '';
+    };
+    logSize.addEventListener('input', drawDiskHint);
+    logFiles.addEventListener('input', drawDiskHint);
+    drawDiskHint();
+    const retErr = h('p', { class: 'err-text', role: 'alert' });
+    const saveRetention = async (e) => {
+      e.preventDefault();
+      retErr.textContent = '';
+      const next = { maxSizeMB: Number(logSize.value), maxFiles: Number(logFiles.value), hourlyHours: Number(hourly.value), dailyDays: Number(daily.value) };
+      const shrinks = next.maxFiles < s.log.maxFiles || next.hourlyHours < s.stats.hourlyHours || next.dailyDays < s.stats.dailyDays;
+      if (shrinks && !await confirmDialog({ title: 'Delete older data?', text: 'The new limits are lower: older log files and traffic history beyond them are deleted. This cannot be undone.', ok: 'Save and delete', danger: true })) return;
+      try {
+        await api('PATCH', '/settings', {
+          log: { ...s.log, maxSizeMB: next.maxSizeMB, maxFiles: next.maxFiles },
+          stats: { hourlyHours: next.hourlyHours, dailyDays: next.dailyDays },
+        });
+        toast('Retention saved');
+        render();
+      } catch (x) { retErr.textContent = x.message; }
+    };
+
     // backup
     const restoreInput = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onChange: async (e) => {
       const f = e.target.files[0];
@@ -1059,7 +1090,7 @@
     } });
 
     fill(wrap,
-      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Web interface, API access for the iOS app, logs and backups')),
+      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Web interface, API access for the iOS app, logs, data retention and backups')),
       restartBox,
 
       h('form', { class: 'card', onSubmit: savePw, 'aria-labelledby': 'acc' },
@@ -1103,6 +1134,17 @@
         h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'lv' }, 'Log level'), levelSel),
           h('div', { class: 'field', style: { justifyContent: 'flex-end' } }, h('a', { class: 'btn', href: '/api/v1/logs/download' }, 'Download log')))),
+
+      h('form', { class: 'card', onSubmit: saveRetention, 'aria-labelledby': 'ret' },
+        h('h2', { id: 'ret' }, 'Data retention'),
+        h('p', { class: 'lead' }, 'How much log and traffic history is kept. Changes apply immediately, without a restart.'),
+        h('div', { class: 'grid' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rs' }, 'Log file size (MB)'), logSize, h('span', { class: 'hint' }, 'The log starts a new file at this size. 1–1000')),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rf' }, 'Old log files kept'), logFiles, diskHint),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rh' }, 'Hourly traffic history'), hourly, h('span', { class: 'hint' }, 'Used by the 24-hour charts')),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts. All-time totals are always kept'))),
+        retErr,
+        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save retention'))),
 
       h('section', { class: 'card', 'aria-labelledby': 'bk' },
         h('h2', { id: 'bk' }, 'Backup & restore'),

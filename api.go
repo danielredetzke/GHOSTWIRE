@@ -25,6 +25,7 @@ type App struct {
 	auth     *Auth
 	tls      *webTLS
 	logPath  string
+	logw     *rotatingWriter // nil in tests
 	started  time.Time
 	shutdown func() // graceful stop; systemd restarts the service
 }
@@ -802,6 +803,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"web":           cfg.Web,
 		"log":           cfg.Log,
+		"stats":         cfg.Stats,
 		"adminUsername": cfg.Admin.Username,
 		"fingerprint":   a.tls.Fingerprint(),
 		"logPath":       a.logPath,
@@ -828,14 +830,16 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		after, _ := json.Marshal(c.Web)
 		restart = string(before) != string(after)
+		if err := field(m, "stats", &c.Stats); err != nil {
+			return err
+		}
 		return field(m, "log", &c.Log)
 	})
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	cfg := a.store.Get()
-	logLevel.Set(parseLevel(cfg.Log.Level))
+	a.applyRuntime(a.store.Get())
 	a.audit(r, "app settings changed", "restartRequired", restart)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restartRequired": restart})
 }
@@ -961,4 +965,13 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "backup restored", "peers", len(in.Peers))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applyError": a.apply(), "restartRequired": true})
+}
+
+// applyRuntime applies the settings that take effect without a restart: log
+// level and log rotation. Traffic retention is read by the stats sampler.
+func (a *App) applyRuntime(c *Config) {
+	logLevel.Set(parseLevel(c.Log.Level))
+	if a.logw != nil {
+		a.logw.SetLimits(c.Log.MaxSizeMB, c.Log.MaxFiles)
+	}
 }

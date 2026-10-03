@@ -200,7 +200,7 @@ func run(configPath string) error {
 	auth := newAuth(store)
 	app := &App{
 		store: store, kernel: kernel, recon: recon, stats: stats, auth: auth, tls: webTLS,
-		logPath: logPath, started: time.Now(), shutdown: shutdown,
+		logPath: logPath, logw: logw, started: time.Now(), shutdown: shutdown,
 	}
 
 	var wg sync.WaitGroup
@@ -270,7 +270,7 @@ func run(configPath string) error {
 				if err := store.Reload(); err != nil {
 					slog.Error("reload failed", "err", err)
 				} else {
-					logLevel.Set(parseLevel(store.Get().Log.Level))
+					app.applyRuntime(store.Get())
 					recon.Kick()
 					slog.Info("config reloaded")
 				}

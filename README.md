@@ -11,8 +11,8 @@ manages peers (add, change, disable, remove) and records traffic per peer.
   `inet GHOSTWIRE` table.
 - **Live peer changes:** only peers that changed are touched, the same effect
   as `wg syncconf`, so connected peers stay connected.
-- **Logs:** written to `GHOSTWIRE.jsonl` and rotated at 10 MB, keeping 5 files.
-- **Traffic history:** kept in `stats.json`: hourly for 48 h, daily for 400 days.
+- **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files kept by default (Settings → Data retention).
+- **Traffic history:** kept in `stats.json`: hourly for 48 h and daily for 400 days by default (Settings → Data retention).
 - **Client private keys are never stored.** A config is shown once, as a
   download or QR code. "Issue new config" makes new keys.
 

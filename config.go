@@ -19,14 +19,29 @@ import (
 // config.json and is the single source of truth: the kernel (interface, peers,
 // firewall) is reconciled to match it.
 type Config struct {
-	Version   int        `json:"version"`
-	Web       WebConfig  `json:"web"`
-	Admin     Admin      `json:"admin"`
-	APITokens []APIToken `json:"apiTokens"`
-	Server    Server     `json:"server"`
-	Peers     []Peer     `json:"peers"`
-	Log       LogConfig  `json:"log"`
+	Version   int         `json:"version"`
+	Web       WebConfig   `json:"web"`
+	Admin     Admin       `json:"admin"`
+	APITokens []APIToken  `json:"apiTokens"`
+	Server    Server      `json:"server"`
+	Peers     []Peer      `json:"peers"`
+	Log       LogConfig   `json:"log"`
+	Stats     StatsConfig `json:"stats"`
 }
+
+// StatsConfig sets how long traffic history is kept in stats.json.
+type StatsConfig struct {
+	HourlyHours int `json:"hourlyHours"` // hourly buckets, for the 24 h charts
+	DailyDays   int `json:"dailyDays"`   // daily buckets, for the 7/30/90 day charts
+}
+
+// Limits for the retention settings.
+const (
+	minLogSizeMB, maxLogSizeMB   = 1, 1000
+	minLogFiles, maxLogFiles     = 1, 100
+	minHourlyHours, maxHourlyHrs = 24, 24 * 31
+	minDailyDays, maxDailyDays   = 7, 3660
+)
 
 type WebConfig struct {
 	Listen       string    `json:"listen"`     // HTTPS (or HTTP when tls.mode is "off") listen address
@@ -158,6 +173,12 @@ func (c *Config) applyDefaults() {
 	if c.Log.MaxFiles == 0 {
 		c.Log.MaxFiles = 5
 	}
+	if c.Stats.HourlyHours == 0 {
+		c.Stats.HourlyHours = 48
+	}
+	if c.Stats.DailyDays == 0 {
+		c.Stats.DailyDays = 400
+	}
 	if c.APITokens == nil {
 		c.APITokens = []APIToken{}
 	}
@@ -268,6 +289,21 @@ func (c *Config) validate() error {
 	}
 	if s.ClientDefaults.Keepalive < 0 || s.ClientDefaults.Keepalive > 3600 {
 		return errors.New("keepalive must be 0–3600 seconds")
+	}
+	if l := c.Log; l.MaxSizeMB < minLogSizeMB || l.MaxSizeMB > maxLogSizeMB {
+		return fmt.Errorf("log file size must be %d–%d MB", minLogSizeMB, maxLogSizeMB)
+	} else if l.MaxFiles < minLogFiles || l.MaxFiles > maxLogFiles {
+		return fmt.Errorf("kept log files must be %d–%d", minLogFiles, maxLogFiles)
+	}
+	switch c.Log.Level {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("log level must be debug, info, warn or error")
+	}
+	if st := c.Stats; st.HourlyHours < minHourlyHours || st.HourlyHours > maxHourlyHrs {
+		return fmt.Errorf("hourly traffic history must be %d–%d hours", minHourlyHours, maxHourlyHrs)
+	} else if st.DailyDays < minDailyDays || st.DailyDays > maxDailyDays {
+		return fmt.Errorf("daily traffic history must be %d–%d days", minDailyDays, maxDailyDays)
 	}
 	switch c.Web.TLS.Mode {
 	case "acme":

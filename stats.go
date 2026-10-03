@@ -17,8 +17,6 @@ import (
 const (
 	sampleInterval = 30 * time.Second
 	saveInterval   = 5 * time.Minute
-	keepHours      = 48
-	keepDays       = 400
 	onlineWindow   = 3 * time.Minute
 )
 
@@ -79,17 +77,42 @@ func dayStart(t time.Time) int64 {
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location()).Unix()
 }
 
-func addTo(list []bucket, start, rx, tx int64, keep int) []bucket {
+func addTo(list []bucket, start, rx, tx int64) []bucket {
 	if n := len(list); n > 0 && list[n-1].T == start {
 		list[n-1].Rx += rx
 		list[n-1].Tx += tx
 		return list
 	}
-	list = append(list, bucket{T: start, Rx: rx, Tx: tx})
-	if len(list) > keep {
-		list = list[len(list)-keep:]
+	return append(list, bucket{T: start, Rx: rx, Tx: tx})
+}
+
+// dropBefore removes buckets that start before cutoff. Lists are in time
+// order, so only a prefix is removed.
+func dropBefore(list []bucket, cutoff int64) []bucket {
+	i := 0
+	for i < len(list) && list[i].T < cutoff {
+		i++
 	}
-	return list
+	if i == 0 {
+		return list
+	}
+	return append([]bucket(nil), list[i:]...)
+}
+
+// prune applies the retention settings to every peer's history; the oldest
+// kept bucket is the one that holds the start of the retention window.
+func (s *Stats) prune(c StatsConfig, now time.Time) {
+	hourCut := hourStart(now.Add(-time.Duration(c.HourlyHours-1) * time.Hour))
+	y, m, d := now.Date()
+	dayCut := time.Date(y, m, d-(c.DailyDays-1), 0, 0, 0, 0, now.Location()).Unix()
+	for _, ps := range s.data.Peers {
+		h, dl := len(ps.Hourly), len(ps.Daily)
+		ps.Hourly = dropBefore(ps.Hourly, hourCut)
+		ps.Daily = dropBefore(ps.Daily, dayCut)
+		if len(ps.Hourly) != h || len(ps.Daily) != dl {
+			s.dirty = true
+		}
+	}
 }
 
 func (s *Stats) sample() {
@@ -126,8 +149,8 @@ func (s *Stats) sample() {
 		if dRx > 0 || dTx > 0 {
 			ps.TotalRx += dRx
 			ps.TotalTx += dTx
-			ps.Hourly = addTo(ps.Hourly, hourStart(now), dRx, dTx, keepHours)
-			ps.Daily = addTo(ps.Daily, dayStart(now), dRx, dTx, keepDays)
+			ps.Hourly = addTo(ps.Hourly, hourStart(now), dRx, dTx)
+			ps.Daily = addTo(ps.Daily, dayStart(now), dRx, dTx)
 		}
 		if !smp.LastHandshake.IsZero() {
 			ps.LastHandshake = smp.LastHandshake
@@ -143,6 +166,7 @@ func (s *Stats) sample() {
 			s.dirty = true
 		}
 	}
+	s.prune(cfg.Stats, now)
 }
 
 func (s *Stats) save() {
