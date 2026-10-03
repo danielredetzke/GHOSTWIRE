@@ -41,6 +41,7 @@ a:hover { color: var(--link-hover); }
 .side { flex: 1 1 230px; background: var(--ink); color: #c9c9c3; padding: 20px 12px; display: flex; flex-direction: column; gap: 2px; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 18px; color: #fff; }
 .brand svg { flex: none; }
+a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .brand .wm { font-family: var(--mono); font-weight: 600; font-size: 16px; letter-spacing: 0.06em; line-height: 1.2; }
 .brand .kana { font-family: "Hiragino Sans", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif; font-size: 10px; letter-spacing: 0.3em; color: #8d8e93; margin-top: 2px; }
 .srv { display: flex; align-items: center; gap: 8px; margin: 0 6px 16px; padding: 10px; border: 1px solid #2c2d32; border-radius: 8px; font-size: 12px; color: #c9c9c3; }

@@ -63,7 +63,8 @@
   }
 
   // brand is the logo lockup: mark, wordmark and the katakana reading.
-  const brand = (size) => h('div', { class: 'brand' }, logo(size),
+  // With href it is a link (the sidebar's goes to the start page).
+  const brand = (size, href) => h(href ? 'a' : 'div', href ? { class: 'brand', href } : { class: 'brand' }, logo(size),
     h('div', null, h('div', { class: 'wm' }, APP), h('div', { class: 'kana', lang: 'ja' }, 'ゴーストワイヤー')));
 
   // Icons are constant markup from ICONS, never data.
@@ -356,7 +357,7 @@
     peerCount = h('span', { class: 'count' });
     navLinks = {};
     const nav = h('nav', { class: 'side', 'aria-label': 'Main' },
-      brand(34),
+      brand(34, '#/'),
       srvBox,
       NAV.map(([href, ic, label]) => (navLinks[href] = h('a', { class: 'nav', href }, icon(ic), label, ic === 'peers' ? peerCount : null))),
       h('div', { class: 'foot' },
