@@ -117,8 +117,9 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 
 Base path `/api/v1`. The web interface signs in with a session cookie. Apps and
 scripts use `Authorization: Bearer <token>`; create the token under Settings →
-Pair iOS app. A read-only token may only use GET. Tokens cannot use the admin
-endpoints.
+Pair iOS app. A read-only token may only use GET. Full-access tokens can do
+everything the web interface does except the admin-only endpoints: password,
+API tokens, backup and restore, and changing the admin username.
 
 ```
 POST   /auth/login · /auth/logout        GET /auth/me        POST /auth/password (admin)
@@ -128,8 +129,9 @@ GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
 POST   /peers/{id}/enable | /disable | /issue-config
 GET    /peers/{id}/stats?range=…
-admin: GET|PATCH /settings · POST /restart · GET|POST /tokens · DELETE /tokens/{id}
-       GET /logs?level=&limit=&audit=1 · GET /logs/download · GET /backup · POST /restore
+GET    /settings       PATCH /settings   POST /restart
+GET    /logs?level=&limit=&audit=1       GET /logs/download
+admin: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
 ```
 
 Traffic is reported from the peer's point of view: `down` is what the peer
@@ -140,6 +142,20 @@ downloaded, `up` is what it uploaded.
 GHOSTWIRE's rules sit in their own nftables table. An accept there cannot
 override a drop in another table, so if ufw or firewalld is active, allow UDP
 51820 (and TCP 443/80) in that firewall too.
+
+## iOS app
+
+`ios/` holds the native iPhone app (SwiftUI, iOS 17+). It does everything the
+web interface does except password, API tokens and backups. Pair it in the web
+interface under Settings → Pair iOS app: scan the QR code, or tap "Copy pairing
+code" and paste it into the app's "Enter manually". Self-signed certificates are
+pinned during pairing.
+
+- Open `ios/GHOSTWIRE.xcodeproj` in Xcode to build and run.
+- `TEAM_ID=<your team> ios/release.sh` archives and uploads a build to App Store
+  Connect.
+- `ios/AppStore/` has the store listing text, privacy details, review notes and
+  6.9-inch screenshots.
 
 ## Development
 

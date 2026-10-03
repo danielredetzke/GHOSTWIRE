@@ -125,14 +125,16 @@ func (a *App) routes() http.Handler {
 	g("POST /api/v1/peers/{id}/issue-config", a.issueConfig)
 	g("GET /api/v1/peers/{id}/stats", a.peerStats)
 
-	adm("GET /api/v1/settings", a.getSettings)
-	adm("PATCH /api/v1/settings", a.patchSettings)
-	adm("POST /api/v1/restart", a.restart)
+	// Full-access tokens (the iOS app) may change app settings and read logs.
+	// Password, tokens and backups stay with the admin account.
+	g("GET /api/v1/settings", a.getSettings)
+	g("PATCH /api/v1/settings", a.patchSettings)
+	g("POST /api/v1/restart", a.restart)
 	adm("GET /api/v1/tokens", a.listTokens)
 	adm("POST /api/v1/tokens", a.createToken)
 	adm("DELETE /api/v1/tokens/{id}", a.deleteToken)
-	adm("GET /api/v1/logs", a.logs)
-	adm("GET /api/v1/logs/download", a.downloadLog)
+	g("GET /api/v1/logs", a.logs)
+	g("GET /api/v1/logs/download", a.downloadLog)
 	adm("GET /api/v1/backup", a.backup)
 	adm("POST /api/v1/restore", a.restore)
 
@@ -814,6 +816,10 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 	m, err := decodeFields(r)
 	if err != nil {
 		writeErr(w, err)
+		return
+	}
+	if _, ok := m["adminUsername"]; ok && !who(r).IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the admin account can change the username"})
 		return
 	}
 	var restart bool

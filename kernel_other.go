@@ -69,10 +69,11 @@ func (k *simKernel) Sample(string) ([]PeerSample, error) {
 
 func (k *simKernel) Checks(c *Config) []Check {
 	return []Check{
-		{"WireGuard interface", true, "simulated (not Linux)"},
-		{"IPv4 forwarding", true, "simulated"},
-		{"nftables rules", true, "simulated"},
-		{"Uplink", true, "IPv4 via eth0 (simulated)"},
+		// Same wording as on Linux, so screenshots look like a real server.
+		{"WireGuard interface", true, c.Server.Interface + " is up"},
+		{"IPv4 forwarding", true, "net.ipv4.ip_forward=1"},
+		{"nftables rules", true, "table inet " + appName + " present"},
+		{"Uplink", true, "IPv4 via eth0"},
 	}
 }
 

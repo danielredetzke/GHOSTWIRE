@@ -1008,7 +1008,9 @@
               h('div', { class: 'notice' }, 'The token is shown only now. Only a hash is stored on the server.'),
               h('div', { class: 'qrrow' },
                 h('img', { class: 'qr', src: r.qr, alt: 'Pairing QR code' }),
-                h('div', { class: 'col' }, h('button', { type: 'button', class: 'btn', onClick: () => copy(r.token) }, 'Copy token'))),
+                h('div', { class: 'col' },
+                  h('button', { type: 'button', class: 'btn', onClick: () => copy(r.pairing) }, 'Copy pairing code'),
+                  h('button', { type: 'button', class: 'btn', onClick: () => copy(r.token) }, 'Copy token'))),
               h('pre', { class: 'code' }, r.token),
               h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done')));
             reloadTokens();
