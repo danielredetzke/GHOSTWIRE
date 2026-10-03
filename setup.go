@@ -36,8 +36,9 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `%s %s — WireGuard server manager
 
 Usage (as root):
-  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host]
-        set up user, folder, config, sysctls and systemd service; start it
+  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host] [-port 51820] [-y]
+        set up user, folder, config, sysctls and systemd service; start it.
+        In a terminal it asks for the settings no flag gave; -y never asks
   %s update [-force]
         replace the installed binary with this one and restart
   %s uninstall [-purge] [-y]
@@ -330,13 +331,44 @@ func cmdInstall(args []string) error {
 	domain := fs.String("domain", "", "domain for the web interface; enables Let's Encrypt")
 	email := fs.String("email", "", "contact email for Let's Encrypt (optional)")
 	endpoint := fs.String("endpoint", "", "host or IP clients connect to (default: the domain)")
+	port := fs.Int("port", 0, "UDP port WireGuard listens on (default: 51820, or the current port when already installed)")
+	yes := fs.Bool("y", false, "do not ask; use the flags and defaults")
 	_ = fs.Parse(args)
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	if err := requireRoot(); err != nil {
 		return err
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
+	}
+
+	// Read the current settings without changing anything, so questions
+	// and checks happen before the system is touched.
+	_, statErr := os.Stat(configFile)
+	existing := statErr == nil
+	cur, err := loadConfigFile(configFile)
+	if err != nil {
+		return err
+	}
+	plan := installPlan{domain: *domain, email: *email, endpoint: *endpoint, port: *port}
+	if err := plan.check(); err != nil {
+		return err
+	}
+	if !existing {
+		n, err := randomSubnet(24)
+		if err != nil {
+			return err
+		}
+		plan.ipv4 = n.String()
+	}
+	if !*yes && term.IsTerminal(int(os.Stdin.Fd())) {
+		if plan, err = askInstall(os.Stdin, cur, existing, given, plan); err != nil {
+			return err
+		}
+	} else if n := plan.reissueCount(cur, existing); n > 0 {
+		fmt.Printf("Note: %d existing device(s) need a new config: the endpoint or port changes.\n", n)
 	}
 
 	// User and folder
@@ -375,11 +407,11 @@ func cmdInstall(args []string) error {
 		}
 	}
 
-	// Config: created with defaults (server key, free subnet) if missing.
-	_, statErr := os.Stat(configFile)
-	if errors.Is(statErr, os.ErrNotExist) {
+	// Config: created with defaults (server key, the chosen subnet) if missing.
+	if !existing {
 		step("Creating %s", configFile)
-		if err := os.WriteFile(configFile, []byte("{}\n"), 0o600); err != nil {
+		initial := fmt.Sprintf("{\"server\": {\"ipv4\": %q}}\n", plan.ipv4)
+		if err := os.WriteFile(configFile, []byte(initial), 0o600); err != nil {
 			return err
 		}
 	}
@@ -390,23 +422,9 @@ func cmdInstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *domain != "" || *email != "" || *endpoint != "" {
-		step("Saving domain and endpoint settings")
-		if err := store.Update(func(c *Config) error {
-			if *domain != "" {
-				c.Web.TLS.Mode, c.Web.TLS.Domain = "acme", *domain
-				if c.Server.Endpoint == "" {
-					c.Server.Endpoint = *domain
-				}
-			}
-			if *email != "" {
-				c.Web.TLS.Email = *email
-			}
-			if *endpoint != "" {
-				c.Server.Endpoint = *endpoint
-			}
-			return nil
-		}); err != nil {
+	if plan.changes() {
+		step("Saving the settings")
+		if err := store.Update(func(c *Config) error { plan.apply(c); return nil }); err != nil {
 			return err
 		}
 	}

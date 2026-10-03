@@ -55,8 +55,8 @@ dependencies on the server: the binary installs, updates and removes itself.
 ## Requirements
 
 - Linux with kernel 5.6 or newer (WireGuard built in), nftables and systemd
-- Ports: UDP 51820 (WireGuard), TCP 443 (web), TCP 80 (optional, Let's Encrypt
-  http-01 and redirect)
+- Ports: UDP 51820 (WireGuard; another port can be chosen at install), TCP 443
+  (web), TCP 80 (optional, Let's Encrypt http-01 and redirect)
 
 ## Build
 
@@ -77,12 +77,62 @@ The binary installs itself. Copy it to the server and run it as root:
 ```sh
 scp dist/amd64/GHOSTWIRE server:/tmp/
 ssh server
-sudo /tmp/GHOSTWIRE install -domain vpn.example.net -email you@example.net
+sudo /tmp/GHOSTWIRE install
 ```
 
-`-domain` turns on Let's Encrypt and is also used as the WireGuard endpoint.
-Without it, the web interface uses a self-signed certificate; set the endpoint
-later in the web interface or with `-endpoint`.
+It asks a few questions, shows a summary and changes nothing until you
+confirm:
+
+```
+Web interface
+  Domain name for the web interface (empty: no domain, self-signed certificate)
+  > vpn.example.net
+  Email for Let's Encrypt expiry warnings (optional)
+  > you@example.net
+
+WireGuard
+  Address devices connect to [vpn.example.net]
+  >
+  UDP port [51820]
+  >
+
+Admin account
+  Password for "admin" (at least 12 characters): ************
+  Repeat password: ************
+
+Summary
+  Web interface   https://vpn.example.net/ (Let's Encrypt, you@example.net)
+  Endpoint        vpn.example.net:51820/udp
+  Tunnel network  10.214.86.0/24 (random free range) · IPv6 on
+  Firewall        443/tcp, 80/tcp, 51820/udp must be reachable
+
+Install with these settings? [Y/n]
+```
+
+A domain turns on Let's Encrypt and is also the default WireGuard endpoint.
+Without one, the web interface uses a self-signed certificate and the
+endpoint defaults to the server's detected public IP.
+
+### Unattended install
+
+For scripts, cloud-init or Ansible, give the settings as flags. Questions
+are skipped for every flag given, and entirely with `-y` or when there is no
+terminal:
+
+```sh
+sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -port 51820
+```
+
+| Flag | Default |
+|---|---|
+| `-domain` | none: self-signed certificate |
+| `-email` | none |
+| `-endpoint` | the domain |
+| `-port` | 51820, or the current port when already installed |
+
+The admin password is then read from standard input, e.g.
+`echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`. Every value is checked
+before anything is changed.
 
 `install`:
 
@@ -92,10 +142,13 @@ later in the web interface or with `-endpoint`.
 4. writes `/etc/sysctl.d/99-ghostwire.conf` (IP forwarding) and
    `/etc/modules-load.d/ghostwire.conf`, and loads the kernel module
 5. writes `/etc/systemd/system/ghostwire.service`
-6. asks for the admin password (first install only)
+6. sets the admin password (first install only)
 7. enables and starts the service, and checks that it stays up
 
-Running it again is safe: steps that are already done are skipped.
+Running it again is safe: steps that are already done are skipped, and the
+questions offer the current settings, so Enter keeps them. If a changed
+endpoint or port means existing devices need a new config, the summary says
+how many.
 
 Then open `https://vpn.example.net` and sign in as `admin`. Root is needed only
 for the commands below, never for the running service.
@@ -104,7 +157,7 @@ for the commands below, never for the running service.
 
 | Command | What it does |
 |---|---|
-| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h]` | Sets up and starts the service, as above. |
+| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. |
 | `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>`, replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary is put back and restarted. It refuses older versions without `-force`. |
 | `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
 | `GHOSTWIRE passwd` | Sets the admin password and reloads the running service. |

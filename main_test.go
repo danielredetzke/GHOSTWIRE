@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -618,4 +619,65 @@ func TestSetupLink(t *testing.T) {
 	call(admin, "POST", "/api/v1/peers/"+id+"/issue-config", map[string]any{"delivery": "link"}, 200)
 	call(admin, "DELETE", "/api/v1/peers/"+id+"/setup", nil, 200)
 	call(admin, "GET", "/api/v1/peers/"+id+"/setup", nil, 404)
+}
+
+// TestInstallQuestions answers the interactive install's questions.
+func TestInstallQuestions(t *testing.T) {
+	hash, _ := hashPassword("a long test password")
+	fresh := func() *Config {
+		c := &Config{}
+		c.applyDefaults()
+		c.Admin.PasswordHash = hash // skips the password question
+		return c
+	}
+
+	// New install: domain, email, endpoint from the domain, own port. A bad
+	// port is asked again.
+	in := "vpn.example.net\nyou@example.net\n\nabc\n70000\n51900\ny\n"
+	p, err := askInstall(strings.NewReader(in), fresh(), false, map[string]bool{}, installPlan{ipv4: "10.9.8.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := fresh()
+	p.apply(c)
+	if c.Web.TLS.Mode != "acme" || c.Web.TLS.Domain != "vpn.example.net" || c.Web.TLS.Email != "you@example.net" ||
+		c.Server.Endpoint != "vpn.example.net" || c.Server.ListenPort != 51900 {
+		t.Fatalf("answers not applied: %+v %+v", c.Web.TLS, c.Server)
+	}
+
+	// Re-run with a device: Enter keeps everything, so no change.
+	cur := fresh()
+	p.apply(cur)
+	cur.Peers = []Peer{{ID: "a", Name: "phone", IPv4: "10.9.8.2", PublicKey: "k"}}
+	p2, err := askInstall(strings.NewReader("\n\n\n\ny\n"), cur, true, map[string]bool{}, installPlan{})
+	if err != nil || p2.changes() {
+		t.Fatalf("Enter should keep the settings: %+v %v", p2, err)
+	}
+
+	// Changing the port warns about the device; answering n cancels.
+	p3, err := askInstall(strings.NewReader("\n\n\n51820\nn\n"), cur, true, map[string]bool{}, installPlan{})
+	if !errors.Is(err, errCancelled) {
+		t.Fatalf("want cancel, got %v", err)
+	}
+	if p3.reissueCount(cur, true) != 1 {
+		t.Fatal("port change should need a new config for the device")
+	}
+
+	// "none" turns the domain off; given flags are not asked.
+	p4, err := askInstall(strings.NewReader("none\n\ny\n"), cur, true, map[string]bool{"port": true}, installPlan{})
+	if err != nil || !p4.noDomain {
+		t.Fatalf("none should remove the domain: %+v %v", p4, err)
+	}
+	c = cur.clone()
+	p4.apply(c)
+	if c.Web.TLS.Mode != "selfsigned" || c.Web.TLS.Domain != "" || c.Server.Endpoint != "vpn.example.net" {
+		t.Fatalf("domain not removed: %+v", c.Web.TLS)
+	}
+
+	// Flags are checked before anything changes.
+	for _, bad := range []installPlan{{port: 70000}, {domain: "not a domain"}, {email: "nope"}, {endpoint: "host:51820"}} {
+		if bad.check() == nil {
+			t.Errorf("%+v should be rejected", bad)
+		}
+	}
 }

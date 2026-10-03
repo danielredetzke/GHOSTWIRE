@@ -474,22 +474,30 @@ func (a *App) rotateServerKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) detectIP(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ip, err := detectPublicIP(r.Context())
+	if err != nil {
+		writeErr(w, badRequest("%v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ip": ip.String()})
+}
+
+// detectPublicIP asks an outside service which address this server has.
+func detectPublicIP(ctx context.Context) (netip.Addr, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://checkip.amazonaws.com", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		writeErr(w, badRequest("could not detect the public IP: %v", err))
-		return
+		return netip.Addr{}, fmt.Errorf("could not detect the public IP: %v", err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 100))
 	ip, err := netip.ParseAddr(strings.TrimSpace(string(b)))
 	if err != nil {
-		writeErr(w, badRequest("unexpected answer from the IP service"))
-		return
+		return netip.Addr{}, errors.New("unexpected answer from the IP service")
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ip": ip.String()})
+	return ip, nil
 }
 
 // --- peers ---
