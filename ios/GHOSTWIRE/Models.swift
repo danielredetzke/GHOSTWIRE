@@ -61,6 +61,38 @@ nonisolated struct PeerStats: Decodable, Hashable {
     let lastHandshake: Date?
     let endpoint: String
     let down24h, up24h, down30d, up30d, downTotal, upTotal: Int64
+    let location: GeoInfo?
+}
+
+/// Country and network of an address, from the server's DB-IP lookup.
+nonisolated struct GeoInfo: Decodable, Hashable {
+    let country: String?
+    let countryName: String?
+    let asn: Int?
+    let network: String?
+
+    /// "Germany · Deutsche Telekom AG" or "Local network".
+    var label: String {
+        [countryName ?? country, network].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+}
+
+/// One row of a peer's connection history.
+nonisolated struct ConnSession: Decodable, Identifiable, Hashable {
+    let start: Date
+    let end: Date
+    let open: Bool
+    let seconds: Int64
+    let endpoint: String
+    let ip: String
+    let geo: GeoInfo?
+    let down: Int64
+    let up: Int64
+    var id: String { "\(start.timeIntervalSince1970)-\(ip)" }
+}
+
+nonisolated struct SessionsResponse: Decodable {
+    let sessions: [ConnSession]
 }
 
 nonisolated struct Peer: Decodable, Identifiable, Hashable {
@@ -166,6 +198,12 @@ nonisolated struct LogSettings: Codable, Equatable {
 nonisolated struct StatsSettings: Codable, Equatable {
     var hourlyHours: Int
     var dailyDays: Int
+    var geoip: Bool?
+}
+
+nonisolated struct GeoStatus: Decodable {
+    let enabled: Bool
+    let updated: Date?
 }
 
 nonisolated struct AppSettings: Decodable {
@@ -175,6 +213,7 @@ nonisolated struct AppSettings: Decodable {
     var adminUsername: String
     var fingerprint: String
     var logPath: String
+    var geo: GeoStatus?
 }
 
 nonisolated struct SettingsResult: Decodable {

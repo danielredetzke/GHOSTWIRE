@@ -124,6 +124,23 @@
     return ts + '  ' + String(l.level).padEnd(5) + '  ' + l.msg + (rest ? '  ' + rest : '');
   }
 
+  // "Germany · Deutsche Telekom AG", "Local network" or "".
+  function fmtLocation(g) {
+    if (!g) return '';
+    return [g.countryName || g.country, g.network].filter(Boolean).join(' · ');
+  }
+
+  function fmtDuration(sec) {
+    if (sec < 60) return 'under 1 min';
+    const m = Math.round(sec / 60);
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60);
+    if (h < 48) return h + ' h ' + (m % 60) + ' min';
+    return Math.round(h / 24) + ' days';
+  }
+
+  const fmtStamp = (iso) => new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
   const badge = (st) => h('span', { class: 'badge' }, h('span', { class: st.dot }), st.label);
 
   // ---------- API ----------
@@ -503,7 +520,8 @@
         h('td', null, h('a', { href: '#/peers/' + p.id }, h('strong', null, p.name)), p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
-        h('td', { class: 'mono muted' }, p.stats.endpoint || '–'),
+        h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
+          p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null),
         h('td', { class: 'num' }, fmtBytes(p.stats.down30d)),
         h('td', { class: 'num' }, fmtBytes(p.stats.up30d)),
         h('td', null, h('input', { type: 'checkbox', class: 'sw', checked: p.enabled, 'aria-label': (p.enabled ? 'Disable ' : 'Enable ') + p.name, onChange: (e) => toggle(p, e.target.checked) })),
@@ -663,7 +681,8 @@
   // ---------- peer detail ----------
 
   async function viewPeer(wrap, id) {
-    const [p, srv] = await Promise.all([api('GET', '/peers/' + id), api('GET', '/server')]);
+    const [p, srv, sess] = await Promise.all([api('GET', '/peers/' + id), api('GET', '/server'), api('GET', '/peers/' + id + '/sessions?limit=50')]);
+    const sessions = sess.sessions;
     let range = '7d';
     const st = peerState(p);
     const traffic = h('div');
@@ -757,6 +776,7 @@
           h('dl', { class: 'kv' },
             h('dt', null, 'Tunnel address'), h('dd', { class: 'mono' }, p.ipv4 + '/32', p.ipv6 ? [h('br'), p.ipv6 + '/128'] : null),
             h('dt', null, 'Endpoint'), h('dd', { class: 'mono' }, p.stats.endpoint || '–'),
+            h('dt', null, 'Location'), h('dd', null, fmtLocation(p.stats.location) || '–'),
             h('dt', null, 'Latest handshake'), h('dd', null, ago(p.stats.lastHandshake)),
             h('dt', null, 'Public key'), h('dd', { class: 'mono' }, p.publicKey),
             h('dt', null, 'Preshared key'), h('dd', null, p.hasPresharedKey ? 'Set' : 'None'),
@@ -768,6 +788,24 @@
             h('button', { type: 'button', class: 'btn', onClick: () => reissue() }, 'Issue new config & QR'),
             h('button', { type: 'button', class: 'btn', onClick: pasteKey }, 'Use a key from the device…')),
           h('p', { class: 'hint', style: { margin: '12px 0 0' } }, p.configIssued ? 'Last issued ' + fmtDate(p.configIssued) + '.' : 'Created with a key from the device.'))),
+
+      h('section', { class: 'card flush', 'aria-labelledby': 'hist' },
+        h('div', { class: 'cardhead' }, h('h2', { id: 'hist' }, 'Connection history'),
+          h('span', { class: 'hint' }, 'Newest first · a new row starts when the device changes networks')),
+        sessions.length ? h('div', { class: 'tbl' }, h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Started'), h('th', null, 'Duration'), h('th', null, 'From'), h('th', null, 'Address'),
+            h('th', { class: 'num' }, 'Download'), h('th', { class: 'num' }, 'Upload'))),
+          h('tbody', null, sessions.map((se) => h('tr', null,
+            h('td', null, fmtStamp(se.start)),
+            h('td', null, se.open ? [h('span', { class: 'badge' }, h('span', { class: 'dot ok' }), 'Online now'), ' ', fmtDuration(se.seconds)] : fmtDuration(se.seconds)),
+            h('td', null, fmtLocation(se.geo) || h('span', { class: 'muted' }, 'Unknown')),
+            h('td', { class: 'mono muted' }, se.ip),
+            h('td', { class: 'num' }, fmtBytes(se.down)),
+            h('td', { class: 'num' }, fmtBytes(se.up)))))))
+          : h('p', { class: 'empty' }, 'No connections recorded yet.'),
+        h('p', { class: 'hint', style: { margin: '4px 12px 12px' } }, 'Country and network: ',
+          h('a', { href: 'https://db-ip.com', target: '_blank', rel: 'noopener' }, 'IP Geolocation by DB-IP'),
+          '. Kept as long as the daily traffic history.')),
 
       h('form', { class: 'card', onSubmit: save },
         h('h2', null, 'Settings'),
@@ -1051,6 +1089,8 @@
     const logFiles = h('input', { id: 'rf', type: 'number', min: '1', max: '100', value: s.log.maxFiles, inputMode: 'numeric' });
     const hourly = presetSelect('rh', s.stats.hourlyHours, [[24, '1 day'], [48, '2 days'], [168, '7 days'], [336, '14 days'], [744, '31 days']], 'hours');
     const daily = presetSelect('rd', s.stats.dailyDays, [[30, '30 days'], [90, '90 days'], [180, '6 months'], [400, '13 months'], [730, '2 years'], [1825, '5 years'], [3660, '10 years']], 'days');
+    const geo = h('input', { type: 'checkbox', checked: s.stats.geoip !== false });
+    const geoStatus = s.geo && s.geo.updated ? 'Database from ' + fmtDate(s.geo.updated) + '.' : 'Not downloaded yet.';
     const diskHint = h('span', { class: 'hint' });
     const drawDiskHint = () => {
       const mb = Number(logSize.value) * (Number(logFiles.value) + 1);
@@ -1069,7 +1109,7 @@
       try {
         await api('PATCH', '/settings', {
           log: { ...s.log, maxSizeMB: next.maxSizeMB, maxFiles: next.maxFiles },
-          stats: { hourlyHours: next.hourlyHours, dailyDays: next.dailyDays },
+          stats: { hourlyHours: next.hourlyHours, dailyDays: next.dailyDays, geoip: geo.checked },
         });
         toast('Retention saved');
         render();
@@ -1144,7 +1184,9 @@
           h('div', { class: 'field' }, h('label', { htmlFor: 'rs' }, 'Log file size (MB)'), logSize, h('span', { class: 'hint' }, 'The log starts a new file at this size. 1–1000')),
           h('div', { class: 'field' }, h('label', { htmlFor: 'rf' }, 'Old log files kept'), logFiles, diskHint),
           h('div', { class: 'field' }, h('label', { htmlFor: 'rh' }, 'Hourly traffic history'), hourly, h('span', { class: 'hint' }, 'Used by the 24-hour charts')),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts. All-time totals are always kept'))),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts and the connection history. All-time totals are always kept'))),
+        h('label', { class: 'check section' }, geo, h('span', null, 'Show country and network of peer addresses', h('br'),
+          h('span', { class: 'hint' }, 'Downloads the free DB-IP Lite databases (about 20 MB) once a month and looks addresses up on this server only. ' + geoStatus))),
         retErr,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save retention'))),
 

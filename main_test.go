@@ -430,3 +430,75 @@ func TestRetentionValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSessions(t *testing.T) {
+	s := &Stats{data: statsFile{Peers: map[string]*peerStats{}}}
+	ps := &peerStats{}
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	at := func(min int) time.Time { return t0.Add(time.Duration(min) * time.Minute) }
+	smp := func(min int, ep string) PeerSample { return PeerSample{Endpoint: ep, LastHandshake: at(min)} }
+
+	s.track(ps, smp(0, "192.168.1.20:5000"), 10, 100, at(0)) // online from home
+	s.track(ps, smp(2, "192.168.1.20:5001"), 10, 100, at(2)) // same network, new port
+	if len(ps.Sessions) != 1 || ps.Sessions[0].Rx != 20 || ps.Sessions[0].Endpoint != "192.168.1.20:5001" {
+		t.Fatalf("same network should continue the session: %+v", ps.Sessions)
+	}
+	if g := ps.Sessions[0].Geo; g == nil || g.Network != "Local network" {
+		t.Fatalf("private address should be the local network: %+v", g)
+	}
+	s.track(ps, smp(4, "198.51.100.7:6000"), 5, 50, at(4)) // roamed to mobile
+	if len(ps.Sessions) != 2 || ps.Sessions[0].Open || !ps.Sessions[1].Open {
+		t.Fatalf("roaming should start a new session: %+v", ps.Sessions)
+	}
+	s.track(ps, smp(4, "198.51.100.7:6000"), 0, 0, at(10)) // no handshake for 6 min
+	if ps.openSession() != nil {
+		t.Fatal("session should end when the peer goes quiet")
+	}
+	if ps.Sessions[1].End != at(4) {
+		t.Fatalf("end should be the last time seen online, got %v", ps.Sessions[1].End)
+	}
+
+	// A peer missing from the kernel (disabled) gets its session closed, and
+	// sessions older than the daily retention are pruned.
+	ps.Sessions = append(ps.Sessions, connSession{Start: at(20), End: at(20), Open: true, Endpoint: "198.51.100.7:6000"})
+	s.data.Peers["p"] = ps
+	s.prune(StatsConfig{HourlyHours: 24, DailyDays: 7}, t0.AddDate(0, 0, 30))
+	if len(ps.Sessions) != 1 || !ps.Sessions[0].Open {
+		t.Fatalf("prune should keep only the open session: %+v", ps.Sessions)
+	}
+	if v := s.Sessions("p", 10); len(v) != 1 || v[0].IP != "198.51.100.7" {
+		t.Fatalf("sessions view: %+v", v)
+	}
+}
+
+func TestGeoLookupWithoutDatabase(t *testing.T) {
+	var g *Geo // no databases: private addresses still resolve
+	if info := g.Lookup("10.1.2.3:51820"); info == nil || info.Network != "Local network" {
+		t.Fatalf("private: %+v", info)
+	}
+	if info := g.Lookup("[2001:db8::1]:51820"); info != nil {
+		t.Fatalf("public without database should be unknown: %+v", info)
+	}
+	g2 := newGeo(t.TempDir(), false)
+	if info := g2.Lookup("203.0.113.9:1"); info != nil {
+		t.Fatalf("disabled: %+v", info)
+	}
+}
+
+// TestGeoDatabase runs only with GHOSTWIRE_GEO_DIR pointing at a folder with
+// downloaded geo-country.mmdb and geo-asn.mmdb.
+func TestGeoDatabase(t *testing.T) {
+	dir := os.Getenv("GHOSTWIRE_GEO_DIR")
+	if dir == "" {
+		t.Skip("GHOSTWIRE_GEO_DIR not set")
+	}
+	g := newGeo(dir, true)
+	defer g.Close()
+	for _, ep := range []string{"9.9.9.9:53", "1.1.1.1:53", "[2620:fe::fe]:53"} {
+		info := g.Lookup(ep)
+		if info == nil || info.Country == "" || info.Network == "" {
+			t.Errorf("%s: %+v", ep, info)
+		}
+		t.Logf("%s → %+v", ep, info)
+	}
+}

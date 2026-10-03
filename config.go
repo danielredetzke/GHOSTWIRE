@@ -32,8 +32,13 @@ type Config struct {
 // StatsConfig sets how long traffic history is kept in stats.json.
 type StatsConfig struct {
 	HourlyHours int `json:"hourlyHours"` // hourly buckets, for the 24 h charts
-	DailyDays   int `json:"dailyDays"`   // daily buckets, for the 7/30/90 day charts
+	DailyDays   int `json:"dailyDays"`   // daily buckets and connection history
+	// GeoIP looks up country and network of peer addresses in the DB-IP Lite
+	// databases, downloaded monthly. Default on.
+	GeoIP *bool `json:"geoip,omitempty"`
 }
+
+func (c StatsConfig) geoEnabled() bool { return c.GeoIP == nil || *c.GeoIP }
 
 // Limits for the retention settings.
 const (

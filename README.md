@@ -13,6 +13,7 @@ manages peers (add, change, disable, remove) and records traffic per peer.
   as `wg syncconf`, so connected peers stay connected.
 - **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files kept by default (Settings → Data retention).
 - **Traffic history:** kept in `stats.json`: hourly for 48 h and daily for 400 days by default (Settings → Data retention).
+- **Connection history:** every online session per peer, with start, duration, address and traffic. A new session starts when a device changes networks. Country and network operator come from the free [DB-IP Lite](https://db-ip.com) databases (CC BY 4.0). GHOSTWIRE downloads them monthly (about 20 MB) and looks addresses up locally, so peer addresses never leave the server. You can switch this off under Settings → Data retention.
 - **Client private keys are never stored.** A config is shown once, as a
   download or QR code. "Issue new config" makes new keys.
 
@@ -109,7 +110,8 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 |---|---|
 | `GHOSTWIRE` | the program |
 | `config.json` | all settings, server key, peers, token hashes (0600) |
-| `stats.json` | traffic history per peer |
+| `stats.json` | traffic and connection history per peer |
+| `geo-country.mmdb`, `geo-asn.mmdb` | DB-IP Lite databases for country and network lookups |
 | `GHOSTWIRE.jsonl` | log, one JSON object per line. Changes carry `"audit":true` |
 | `acme/`, `tls/` | certificates |
 
@@ -128,7 +130,7 @@ GET    /server         PATCH /server     POST /server/rotate-key     GET /server
 GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
 POST   /peers/{id}/enable | /disable | /issue-config
-GET    /peers/{id}/stats?range=…
+GET    /peers/{id}/stats?range=…        GET /peers/{id}/sessions?limit=100
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
 admin: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore

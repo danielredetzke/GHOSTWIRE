@@ -187,6 +187,10 @@ func run(configPath string) error {
 		return fmt.Errorf("open stats: %w", err)
 	}
 
+	geo := newGeo(dataDir, cfg.Stats.geoEnabled())
+	defer geo.Close()
+	stats.geo = geo
+
 	webTLS, err := setupTLS(cfg, dataDir)
 	if err != nil {
 		slog.Error("tls setup failed", "err", err)
@@ -200,13 +204,14 @@ func run(configPath string) error {
 	auth := newAuth(store)
 	app := &App{
 		store: store, kernel: kernel, recon: recon, stats: stats, auth: auth, tls: webTLS,
-		logPath: logPath, logw: logw, started: time.Now(), shutdown: shutdown,
+		logPath: logPath, logw: logw, geo: geo, started: time.Now(), shutdown: shutdown,
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); recon.Run(stop) }()
 	go func() { defer wg.Done(); stats.Run(stop) }()
+	go func() { defer wg.Done(); geo.Run(stop) }()
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()

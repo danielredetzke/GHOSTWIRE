@@ -15,8 +15,11 @@ struct PeerDetailView: View {
     @State private var askKey = false
     @State private var deviceKey = ""
     @State private var editing = false
+    @State private var sessions: [ConnSession] = []
+    @State private var allSessions = false
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(spacing: 16) {
                 if let error { Notice(text: error, isError: true) }
@@ -24,6 +27,7 @@ struct PeerDetailView: View {
                     header(p)
                     traffic
                     connection(p)
+                    history.id("history")
                     clientConfig(p)
                     settings(p)
                 } else if error == nil {
@@ -33,6 +37,13 @@ struct PeerDetailView: View {
             .padding(16)
         }
         .background(Color.gwGround)
+        #if DEBUG
+        // Development: `-scrollToHistory YES` for screenshots of the history.
+        .task(id: sessions.count) {
+            if UserDefaults.standard.bool(forKey: "scrollToHistory"), !sessions.isEmpty { proxy.scrollTo("history", anchor: .top) }
+        }
+        #endif
+        }
         .navigationTitle(peer?.name ?? "Peer")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -107,10 +118,71 @@ struct PeerDetailView: View {
             SectionTitle(text: "Connection")
             KV(key: "Tunnel address", value: p.ipv4 + "/32" + (p.ipv6.map { "\n" + $0 + "/128" } ?? ""), mono: true)
             KV(key: "Endpoint", value: p.stats.endpoint.isEmpty ? "–" : p.stats.endpoint, mono: true)
+            KV(key: "Location", value: p.stats.location?.label.isEmpty == false ? p.stats.location!.label : "–")
             KV(key: "Latest handshake", value: ago(p.stats.lastHandshake))
             KV(key: "Public key", value: p.publicKey, mono: true)
             KV(key: "Preshared key", value: p.hasPresharedKey ? "Set" : "None")
             KV(key: "All-time traffic", value: "Download \(fmtBytes(p.stats.downTotal)) · Upload \(fmtBytes(p.stats.upTotal))")
+        }
+        .card()
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionTitle(text: "Connection history")
+            Text("Newest first. A new row starts when the device changes networks.")
+                .font(.caption)
+                .foregroundStyle(Color.gwText2)
+                .padding(.bottom, 8)
+            if sessions.isEmpty {
+                Text("No connections recorded yet.").font(.footnote).foregroundStyle(Color.gwText2).padding(.vertical, 6)
+            }
+            let shown = allSessions ? sessions : Array(sessions.prefix(8))
+            ForEach(shown) { se in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(se.start.formatted(.dateTime.day().month(.abbreviated).hour().minute()))
+                                .font(.subheadline.weight(.medium))
+                            if se.open {
+                                HStack(spacing: 4) {
+                                    Circle().fill(Color.gwGood).frame(width: 6, height: 6)
+                                    Text("online")
+                                }
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color.gwBadge, in: Capsule())
+                            }
+                        }
+                        Text(se.geo?.label.isEmpty == false ? se.geo!.label : "Unknown location")
+                            .font(.footnote)
+                            .foregroundStyle(se.geo == nil ? Color.gwText2 : Color.gwText)
+                        Text(se.ip + " · " + fmtDuration(se.seconds))
+                            .font(.mono(.caption))
+                            .foregroundStyle(Color.gwText2)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text("↓ " + fmtBytes(se.down)).font(.footnote.monospacedDigit())
+                        Text("↑ " + fmtBytes(se.up)).font(.footnote.monospacedDigit()).foregroundStyle(Color.gwText2)
+                    }
+                }
+                .padding(.vertical, 8)
+                .accessibilityElement(children: .combine)
+                if se.id != shown.last?.id { Divider() }
+            }
+            if sessions.count > 8 {
+                Button(allSessions ? "Show fewer" : "Show all \(sessions.count)") { allSessions.toggle() }
+                    .font(.footnote.weight(.medium))
+                    .padding(.top, 8)
+            }
+            HStack(spacing: 4) {
+                Text("Country and network:")
+                Link("IP Geolocation by DB-IP", destination: URL(string: "https://db-ip.com")!).underline()
+            }
+            .font(.caption2)
+            .foregroundStyle(Color.gwText2)
+            .padding(.top, 10)
         }
         .card()
     }
@@ -154,6 +226,7 @@ struct PeerDetailView: View {
             (peer, server) = try await (p, s)
             error = nil
             await loadStats()
+            if let r: SessionsResponse = try? await api.get("/peers/\(peerID)/sessions?limit=100") { sessions = r.sessions }
         } catch {
             self.error = session.message(for: error)
         }

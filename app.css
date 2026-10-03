@@ -94,6 +94,7 @@ h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; over
 .pills { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* status */
+.cc { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; font-size: 11px; color: var(--ink-2); vertical-align: 1px; }
 .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 999px; background: #efefeb; color: #3d3e42; white-space: nowrap; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #9a9b97; display: inline-block; flex: none; }
 .dot.ok { background: var(--good); }

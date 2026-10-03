@@ -26,6 +26,7 @@ type App struct {
 	tls      *webTLS
 	logPath  string
 	logw     *rotatingWriter // nil in tests
+	geo      *Geo            // nil in tests
 	started  time.Time
 	shutdown func() // graceful stop; systemd restarts the service
 }
@@ -124,6 +125,7 @@ func (a *App) routes() http.Handler {
 	g("POST /api/v1/peers/{id}/disable", a.setEnabled(false))
 	g("POST /api/v1/peers/{id}/issue-config", a.issueConfig)
 	g("GET /api/v1/peers/{id}/stats", a.peerStats)
+	g("GET /api/v1/peers/{id}/sessions", a.peerSessions)
 
 	// Full-access tokens (the iOS app) may change app settings and read logs.
 	// Password, tokens and backups stay with the admin account.
@@ -806,6 +808,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"web":           cfg.Web,
 		"log":           cfg.Log,
 		"stats":         cfg.Stats,
+		"geo":           a.geoStatus(),
 		"adminUsername": cfg.Admin.Username,
 		"fingerprint":   a.tls.Fingerprint(),
 		"logPath":       a.logPath,
@@ -980,4 +983,28 @@ func (a *App) applyRuntime(c *Config) {
 	if a.logw != nil {
 		a.logw.SetLimits(c.Log.MaxSizeMB, c.Log.MaxFiles)
 	}
+	a.geo.SetEnabled(c.Stats.geoEnabled())
+}
+
+func (a *App) geoStatus() GeoStatus {
+	if a.geo == nil {
+		return GeoStatus{}
+	}
+	return a.geo.Status()
+}
+
+// peerSessions returns the connection history, newest first.
+func (a *App) peerSessions(w http.ResponseWriter, r *http.Request) {
+	if _, p := a.store.Get().peerByID(r.PathValue("id")); p == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such peer"})
+		return
+	}
+	limit := 100
+	if _, err := fmt.Sscan(r.URL.Query().Get("limit"), &limit); err != nil || limit < 1 || limit > 1000 {
+		limit = 100
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions":    a.stats.Sessions(r.PathValue("id"), limit),
+		"attribution": "IP geolocation by DB-IP (https://db-ip.com), CC BY 4.0",
+	})
 }

@@ -33,6 +33,16 @@ func fmtDate(_ date: Date?) -> String {
     return date.formatted(date: .abbreviated, time: .omitted)
 }
 
+/// "35 min", "2 h 5 min", "3 days".
+func fmtDuration(_ seconds: Int64) -> String {
+    if seconds < 60 { return "under 1 min" }
+    let m = Int((Double(seconds) / 60).rounded())
+    if m < 60 { return "\(m) min" }
+    let h = m / 60
+    if h < 48 { return "\(h) h \(m % 60) min" }
+    return "\(Int((Double(h) / 24).rounded())) days"
+}
+
 /// Label of a chart point: "3 h ago" for hours, "Sat 3 Oct" for days.
 func pointLabel(_ p: StatPoint, range: String) -> String {
     if range == "24h" {

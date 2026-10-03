@@ -139,6 +139,12 @@ struct SettingsView: View {
             Picker("Daily traffic history", selection: s.dailyDays) {
                 ForEach(options(Self.daily, current: stats!.dailyDays, unit: "days"), id: \.0) { Text($0.1).tag($0.0) }
             }
+            Toggle(isOn: Binding(get: { stats!.geoip ?? true }, set: { stats!.geoip = $0 })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Show country and network")
+                    Text(geoStatusText).font(.caption).foregroundStyle(Color.gwText2)
+                }
+            }
             Button("Save retention") {
                 guard let old = settings, let log, let stats else { return }
                 if log.maxFiles < old.log.maxFiles || stats.hourlyHours < old.stats.hourlyHours || stats.dailyDays < old.stats.dailyDays {
@@ -151,7 +157,7 @@ struct SettingsView: View {
         } header: {
             Text("Data retention")
         } footer: {
-            Text("The log uses up to \(log!.maxSizeMB * (log!.maxFiles + 1)) MB on disk. All-time traffic totals are always kept. Applies immediately.")
+            Text("The log uses up to \(log!.maxSizeMB * (log!.maxFiles + 1)) MB on disk. Connection history is kept as long as the daily traffic history; all-time totals are always kept. Country and network come from the free DB-IP Lite databases, downloaded monthly and looked up on the server only. Applies immediately.")
         }
     }
 
@@ -169,6 +175,11 @@ struct SettingsView: View {
         } footer: {
             Text(settings?.logPath ?? "")
         }
+    }
+
+    private var geoStatusText: String {
+        guard let updated = settings?.geo?.updated else { return "Database not downloaded yet" }
+        return "Database from \(fmtDate(updated))"
     }
 
     private func options(_ presets: [(Int, String)], current: Int, unit: String) -> [(Int, String)] {

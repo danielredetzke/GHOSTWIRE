@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -27,14 +28,77 @@ type bucket struct {
 }
 
 type peerStats struct {
-	LastRx        int64     `json:"lastRx"` // last raw counter values
-	LastTx        int64     `json:"lastTx"`
-	TotalRx       int64     `json:"totalRx"`
-	TotalTx       int64     `json:"totalTx"`
-	LastHandshake time.Time `json:"lastHandshake"`
-	Endpoint      string    `json:"endpoint"`
-	Hourly        []bucket  `json:"hourly"`
-	Daily         []bucket  `json:"daily"`
+	LastRx        int64         `json:"lastRx"` // last raw counter values
+	LastTx        int64         `json:"lastTx"`
+	TotalRx       int64         `json:"totalRx"`
+	TotalTx       int64         `json:"totalTx"`
+	LastHandshake time.Time     `json:"lastHandshake"`
+	Endpoint      string        `json:"endpoint"`
+	Hourly        []bucket      `json:"hourly"`
+	Daily         []bucket      `json:"daily"`
+	Sessions      []connSession `json:"sessions,omitempty"`
+}
+
+// session is one stretch of a peer being online from one address. When the
+// device changes networks (Wi-Fi to mobile), a new session starts.
+type connSession struct {
+	Start    time.Time `json:"start"`
+	End      time.Time `json:"end"` // last time the peer was seen online
+	Open     bool      `json:"open,omitempty"`
+	Endpoint string    `json:"endpoint"`
+	Rx       int64     `json:"rx"`
+	Tx       int64     `json:"tx"`
+	Geo      *GeoInfo  `json:"geo,omitempty"` // looked up when the session started
+}
+
+const maxSessions = 1000 // per peer, besides the retention window
+
+func (ps *peerStats) openSession() *connSession {
+	if n := len(ps.Sessions); n > 0 && ps.Sessions[n-1].Open {
+		return &ps.Sessions[n-1]
+	}
+	return nil
+}
+
+func hostOf(endpoint string) string {
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
+		return h
+	}
+	return endpoint
+}
+
+// track updates the session list after a sample. Online means a handshake
+// within the online window, as in the peer lists.
+func (s *Stats) track(ps *peerStats, smp PeerSample, rx, tx int64, now time.Time) {
+	cur := ps.openSession()
+	online := !smp.LastHandshake.IsZero() && now.Sub(smp.LastHandshake) < onlineWindow
+	if !online {
+		if cur != nil {
+			cur.Open = false
+		}
+		return
+	}
+	if cur != nil && smp.Endpoint != "" && hostOf(cur.Endpoint) != hostOf(smp.Endpoint) {
+		cur.Open = false // roamed to another network
+		cur = nil
+	}
+	if cur == nil {
+		start := smp.LastHandshake
+		if start.After(now) {
+			start = now
+		}
+		ps.Sessions = append(ps.Sessions, connSession{Start: start, Open: true, Endpoint: smp.Endpoint, Geo: s.geo.Lookup(smp.Endpoint)})
+		if len(ps.Sessions) > maxSessions {
+			ps.Sessions = append([]connSession(nil), ps.Sessions[len(ps.Sessions)-maxSessions:]...)
+		}
+		cur = &ps.Sessions[len(ps.Sessions)-1]
+	}
+	if smp.Endpoint != "" {
+		cur.Endpoint = smp.Endpoint // same network, the port may change
+	}
+	cur.End = now
+	cur.Rx += rx
+	cur.Tx += tx
 }
 
 type statsFile struct {
@@ -49,6 +113,7 @@ type Stats struct {
 	dirty  bool
 	store  *Store
 	kernel Kernel
+	geo    *Geo // nil: no country and network lookups
 }
 
 func openStats(path string, store *Store, k Kernel) (*Stats, error) {
@@ -106,10 +171,18 @@ func (s *Stats) prune(c StatsConfig, now time.Time) {
 	y, m, d := now.Date()
 	dayCut := time.Date(y, m, d-(c.DailyDays-1), 0, 0, 0, 0, now.Location()).Unix()
 	for _, ps := range s.data.Peers {
-		h, dl := len(ps.Hourly), len(ps.Daily)
+		h, dl, sl := len(ps.Hourly), len(ps.Daily), len(ps.Sessions)
 		ps.Hourly = dropBefore(ps.Hourly, hourCut)
 		ps.Daily = dropBefore(ps.Daily, dayCut)
-		if len(ps.Hourly) != h || len(ps.Daily) != dl {
+		// Connection history is kept as long as the daily traffic history.
+		i := 0
+		for i < len(ps.Sessions) && !ps.Sessions[i].Open && ps.Sessions[i].End.Unix() < dayCut {
+			i++
+		}
+		if i > 0 {
+			ps.Sessions = append([]connSession(nil), ps.Sessions[i:]...)
+		}
+		if len(ps.Hourly) != h || len(ps.Daily) != dl || len(ps.Sessions) != sl {
 			s.dirty = true
 		}
 	}
@@ -131,6 +204,7 @@ func (s *Stats) sample() {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	seen := map[string]bool{}
 	for _, smp := range samples {
 		id := idByKey[smp.PublicKey]
 		if id == "" {
@@ -141,6 +215,7 @@ func (s *Stats) sample() {
 			ps = &peerStats{}
 			s.data.Peers[id] = ps
 		}
+		seen[id] = true
 		dRx, dTx := smp.RxBytes-ps.LastRx, smp.TxBytes-ps.LastTx
 		if dRx < 0 || dTx < 0 { // counters were reset
 			dRx, dTx = smp.RxBytes, smp.TxBytes
@@ -158,11 +233,18 @@ func (s *Stats) sample() {
 		if smp.Endpoint != "" {
 			ps.Endpoint = smp.Endpoint
 		}
+		s.track(ps, smp, dRx, dTx, now)
 		s.dirty = true
 	}
-	for id := range s.data.Peers {
+	for id, ps := range s.data.Peers {
 		if !exists[id] {
 			delete(s.data.Peers, id)
+			s.dirty = true
+			continue
+		}
+		// Disabled peers are not in the kernel any more: end their session.
+		if cur := ps.openSession(); cur != nil && !seen[id] {
+			cur.Open = false
 			s.dirty = true
 		}
 	}
@@ -274,6 +356,7 @@ type PeerSummary struct {
 	Up30d         int64      `json:"up30d"`
 	DownTotal     int64      `json:"downTotal"`
 	UpTotal       int64      `json:"upTotal"`
+	Location      *GeoInfo   `json:"location"` // of the current or last endpoint
 }
 
 func sumPoints(pts []Point) (down, up int64) {
@@ -298,6 +381,49 @@ func (s *Stats) Summary(id string) PeerSummary {
 			out.LastHandshake = &t
 			out.Online = time.Since(t) < onlineWindow
 		}
+		if cur := ps.openSession(); cur != nil && cur.Geo != nil && hostOf(cur.Endpoint) == hostOf(ps.Endpoint) {
+			out.Location = cur.Geo
+		}
+	}
+	if out.Location == nil && out.Endpoint != "" {
+		out.Location = s.geo.Lookup(out.Endpoint)
+	}
+	return out
+}
+
+// SessionView is one row of a peer's connection history, from the peer's
+// point of view (down = downloaded by the peer).
+type SessionView struct {
+	Start    time.Time `json:"start"`
+	End      time.Time `json:"end"`
+	Open     bool      `json:"open"`
+	Seconds  int64     `json:"seconds"`
+	Endpoint string    `json:"endpoint"`
+	IP       string    `json:"ip"`
+	Geo      *GeoInfo  `json:"geo"`
+	Down     int64     `json:"down"`
+	Up       int64     `json:"up"`
+}
+
+// Sessions returns up to limit sessions, newest first.
+func (s *Stats) Sessions(id string, limit int) []SessionView {
+	s.mu.Lock()
+	var list []connSession
+	if ps := s.data.Peers[id]; ps != nil {
+		list = append(list, ps.Sessions...)
+	}
+	s.mu.Unlock()
+	out := []SessionView{}
+	for i := len(list) - 1; i >= 0 && len(out) < limit; i-- {
+		se := list[i]
+		geo := se.Geo
+		if geo == nil {
+			geo = s.geo.Lookup(se.Endpoint) // database was missing when it started
+		}
+		out = append(out, SessionView{
+			Start: se.Start, End: se.End, Open: se.Open, Seconds: int64(se.End.Sub(se.Start).Seconds()),
+			Endpoint: se.Endpoint, IP: hostOf(se.Endpoint), Geo: geo, Down: se.Tx, Up: se.Rx,
+		})
 	}
 	return out
 }
