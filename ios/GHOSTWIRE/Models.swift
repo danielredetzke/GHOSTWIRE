@@ -112,7 +112,16 @@ nonisolated struct Peer: Decodable, Identifiable, Hashable {
     let effectiveKeepalive: Int
     let created: Date
     let configIssued: Date?
+    let setup: SetupInfo?       // pending setup link, nil if none
     let stats: PeerStats
+}
+
+/// A pending setup link as peer lists show it. The link itself is not in it.
+nonisolated struct SetupInfo: Decodable, Hashable {
+    let expires: Date
+    let expired: Bool
+    let pinRequired: Bool
+    let pinFails: Int
 }
 
 nonisolated struct PeerList: Decodable {

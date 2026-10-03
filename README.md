@@ -38,6 +38,10 @@ dependencies on the server: the binary installs, updates and removes itself.
 
 - **Client private keys are never stored.** A config is shown once, as a
   download or QR code. "Issue new config" makes new keys.
+- **Setup links:** instead of showing the QR code, you can send the device's
+  owner a one-time link, valid for 1 hour, 24 hours or 7 days and protected by
+  a 4-digit PIN by default. The keys are made only when the link is opened.
+  The link works once, and 5 wrong PINs revoke it.
 - **The service is not root.** It runs as user `ghostwire` with only
   `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, and can write only to
   `/opt/ghostwire`.
@@ -164,10 +168,17 @@ GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
 POST   /peers/{id}/enable | /disable | /issue-config
 GET    /peers/{id}/stats?range=…        GET /peers/{id}/sessions?limit=100
+GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
 admin: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
+public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
 ```
+
+`POST /peers` and `POST /peers/{id}/issue-config` take
+`{"delivery": "link", "linkHours": 1|24|168, "linkPIN": true}` to answer with a
+setup link (`setup.url`, `setup.pin`, `setup.qr`) instead of a config. With a
+link, the peer's current keys keep working until the link is opened.
 
 Traffic is reported from the peer's point of view: `down` is what the peer
 downloaded, `up` is what it uploaded.

@@ -126,7 +126,7 @@ func (k *linuxKernel) syncDevice(c *Config) error {
 	desired := map[wgtypes.Key]want{}
 	for i := range c.Peers {
 		p := &c.Peers[i]
-		if !p.Enabled {
+		if !p.Enabled || !p.hasKey() {
 			continue
 		}
 		pub, err := wgtypes.ParseKey(p.PublicKey)

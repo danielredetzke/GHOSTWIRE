@@ -314,6 +314,7 @@ func TestAPI(t *testing.T) {
 	bearer("GET", "/peers", 200)
 	bearer("DELETE", "/peers/"+id, 403)
 	bearer("GET", "/tokens", 403)
+	bearer("GET", "/peers/"+id+"/setup", 403) // the link would set up a device
 
 	call("DELETE", "/peers/"+id, nil, 200)
 	if len(store.Get().Peers) != 0 {
@@ -501,4 +502,120 @@ func TestGeoDatabase(t *testing.T) {
 		}
 		t.Logf("%s → %+v", ep, info)
 	}
+}
+
+// TestSetupLink creates a peer with a link, checks PIN handling and that the
+// link works exactly once without storing the private key.
+func TestSetupLink(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error { c.Admin.PasswordHash = hash; c.Server.Endpoint = "vpn.example.net"; return nil })
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+	jar, _ := cookiejar.New(nil)
+	admin := &http.Client{Jar: jar}
+
+	call := func(cl *http.Client, method, path string, body any, want int) map[string]any {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, srv.URL+path, rd)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status %d, want %d: %v", method, path, resp.StatusCode, want, out)
+		}
+		return out
+	}
+	call(admin, "POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "a long test password"}, 200)
+
+	// Two peers waiting for setup have no key yet; that must not clash.
+	created := call(admin, "POST", "/api/v1/peers", map[string]any{"name": "phone-anna", "delivery": "link", "linkHours": 24}, 201)
+	call(admin, "POST", "/api/v1/peers", map[string]any{"name": "laptop-ben", "delivery": "link", "linkPIN": false}, 201)
+	call(admin, "POST", "/api/v1/peers", map[string]any{"name": "x", "delivery": "link", "linkHours": 5}, 400)
+	peer := created["peer"].(map[string]any)
+	id := peer["id"].(string)
+	if peer["publicKey"] != "" || created["config"] != nil {
+		t.Fatalf("link peer got keys or a config: %v", created)
+	}
+	setup := created["setup"].(map[string]any)
+	path, pin := setup["path"].(string), setup["pin"].(string)
+	if len(pin) != setupPINLen || !strings.HasPrefix(setup["url"].(string), srv.URL+"/setup/") || setup["qr"] == "" {
+		t.Fatalf("bad setup answer: %v", setup)
+	}
+	if s := call(admin, "GET", "/api/v1/peers/"+id+"/setup", nil, 200); s["pin"] != pin {
+		t.Fatal("admin cannot read the link again")
+	}
+
+	public := &http.Client{}
+	api := strings.Replace(path, "/setup/", "/api/v1/setup/", 1)
+	if info := call(public, "GET", api, nil, 200); info["name"] != "phone-anna" || info["pinRequired"] != true {
+		t.Fatalf("setup info: %v", info)
+	}
+	call(public, "GET", "/api/v1/setup/nonsense", nil, 404)
+	call(public, "GET", path, nil, 200) // the page itself
+
+	wrong := "0000"
+	if wrong == pin {
+		wrong = "1111"
+	}
+	if r := call(public, "POST", api, map[string]string{"pin": wrong}, 403); r["triesLeft"].(float64) != setupMaxFails-1 {
+		t.Fatalf("wrong PIN: %v", r)
+	}
+	got := call(public, "POST", api, map[string]string{"pin": pin}, 200)
+	conf := got["config"].(string)
+	if !strings.Contains(conf, "PrivateKey = ") || got["qr"] == "" {
+		t.Fatal("redeemed config lacks the private key or QR")
+	}
+	priv := strings.TrimSpace(strings.SplitN(strings.SplitN(conf, "PrivateKey = ", 2)[1], "\n", 2)[0])
+	raw, _ := json.Marshal(store.Get())
+	if bytes.Contains(raw, []byte(priv)) {
+		t.Fatal("client private key was stored")
+	}
+	call(public, "POST", api, map[string]string{"pin": pin}, 404) // works once
+	call(public, "GET", api, nil, 404)
+	p := call(admin, "GET", "/api/v1/peers/"+id, nil, 200)
+	if p["publicKey"] == "" || p["setup"] != nil || p["configIssued"] == nil {
+		t.Fatalf("peer not set up: %v", p)
+	}
+
+	// Re-issue by link: the old key stays until the link is used.
+	oldKey := p["publicKey"]
+	re := call(admin, "POST", "/api/v1/peers/"+id+"/issue-config", map[string]any{"delivery": "link"}, 200)
+	if re["peer"].(map[string]any)["publicKey"] != oldKey {
+		t.Fatal("issuing a link replaced the key early")
+	}
+	api = strings.Replace(re["setup"].(map[string]any)["path"].(string), "/setup/", "/api/v1/setup/", 1)
+	for i := 0; i < setupMaxFails; i++ {
+		want := 403
+		if i == setupMaxFails-1 {
+			want = 404 // revoked by the last wrong PIN
+		}
+		call(public, "POST", api, map[string]string{"pin": "x"}, want)
+	}
+	if p := call(admin, "GET", "/api/v1/peers/"+id, nil, 200); p["setup"] != nil || p["publicKey"] != oldKey {
+		t.Fatalf("link not revoked after wrong PINs: %v", p)
+	}
+
+	// Revoking by hand.
+	call(admin, "POST", "/api/v1/peers/"+id+"/issue-config", map[string]any{"delivery": "link"}, 200)
+	call(admin, "DELETE", "/api/v1/peers/"+id+"/setup", nil, 200)
+	call(admin, "GET", "/api/v1/peers/"+id+"/setup", nil, 404)
 }

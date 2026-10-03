@@ -12,8 +12,6 @@ struct PeerDetailView: View {
     @State private var issued: IssuedConfig?
     @State private var confirmIssue = false
     @State private var confirmDelete = false
-    @State private var askKey = false
-    @State private var deviceKey = ""
     @State private var editing = false
     @State private var sessions: [ConnSession] = []
     @State private var allSessions = false
@@ -64,19 +62,9 @@ struct PeerDetailView: View {
             Text("The device loses access immediately. Its traffic history is deleted too. This cannot be undone.")
         }
         .confirmationDialog("Issue a new config?", isPresented: $confirmIssue, titleVisibility: .visible) {
-            Button("Issue new config") { Task { await issue(publicKey: nil) } }
+            Button("Issue new config") { Task { await issue() } }
         } message: {
             Text("New keys are created. The device that uses the current config stops working until it gets the new one.")
-        }
-        .alert("Use a key from the device", isPresented: $askKey) {
-            TextField("Public key", text: $deviceKey)
-                .font(.mono(.footnote))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            Button("Cancel", role: .cancel) {}
-            Button("Replace key") { Task { await issue(publicKey: deviceKey) } }
-        } message: {
-            Text("Paste the public key the device generated. The current config stops working.")
         }
         .sheet(item: $issued, onDismiss: { Task { await load() } }) { IssuedConfigView(issued: $0) }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) {
@@ -120,7 +108,7 @@ struct PeerDetailView: View {
             KV(key: "Endpoint", value: p.stats.endpoint.isEmpty ? "–" : p.stats.endpoint, mono: true)
             KV(key: "Location", value: p.stats.location?.label.isEmpty == false ? p.stats.location!.label : "–")
             KV(key: "Latest handshake", value: ago(p.stats.lastHandshake))
-            KV(key: "Public key", value: p.publicKey, mono: true)
+            KV(key: "Public key", value: p.publicKey.isEmpty ? "–" : p.publicKey, mono: true)
             KV(key: "Preshared key", value: p.hasPresharedKey ? "Set" : "None")
             KV(key: "All-time traffic", value: "Download \(fmtBytes(p.stats.downTotal)) · Upload \(fmtBytes(p.stats.upTotal))")
         }
@@ -195,9 +183,13 @@ struct PeerDetailView: View {
                 .foregroundStyle(Color.gwText2)
             Button { confirmIssue = true } label: { Label("Issue new config & QR", systemImage: "qrcode") }
                 .buttonStyle(PrimaryButtonStyle())
-            Button("Use a key from the device…") { deviceKey = ""; askKey = true }
-                .buttonStyle(SecondaryButtonStyle())
-            Text(p.configIssued.map { "Last issued \(fmtDate($0))." } ?? "Created with a key from the device.")
+            if let s = p.setup {
+                Text(s.expired ? "The setup link expired \(fmtDate(s.expires)). Manage setup links in the web interface."
+                               : "A setup link is waiting to be opened (until \(fmtDate(s.expires))). Issuing a config here replaces it.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.gwWarnInk)
+            }
+            Text(p.configIssued.map { "Last issued \(fmtDate($0))." } ?? "No config issued yet.")
                 .font(.caption)
                 .foregroundStyle(Color.gwText2)
         }
@@ -259,10 +251,10 @@ struct PeerDetailView: View {
         }
     }
 
-    private func issue(publicKey: String?) async {
+    private func issue() async {
         guard let api = session.api else { return }
         do {
-            let body: [String: Any?]? = publicKey.map { ["publicKey": $0.trimmingCharacters(in: .whitespacesAndNewlines)] }
+            let body: [String: Any?]? = nil
             issued = try await api.send("POST", "/peers/\(peerID)/issue-config", body)
         } catch {
             session.alert = session.message(for: error)

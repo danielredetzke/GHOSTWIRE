@@ -198,7 +198,9 @@ func (s *Stats) sample() {
 	idByKey := map[string]string{}
 	exists := map[string]bool{}
 	for _, p := range cfg.Peers {
-		idByKey[p.PublicKey] = p.ID
+		if p.hasKey() {
+			idByKey[p.PublicKey] = p.ID
+		}
 		exists[p.ID] = true
 	}
 	now := time.Now()

@@ -30,7 +30,7 @@ func (k *simKernel) Apply(c *Config) error {
 	defer k.mu.Unlock()
 	keep := map[string]bool{}
 	for i, p := range c.Peers {
-		if !p.Enabled {
+		if !p.Enabled || !p.hasKey() {
 			continue
 		}
 		keep[p.PublicKey] = true

@@ -12,8 +12,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // App wires the parts together and serves the HTTP API.
@@ -126,6 +124,13 @@ func (a *App) routes() http.Handler {
 	g("POST /api/v1/peers/{id}/issue-config", a.issueConfig)
 	g("GET /api/v1/peers/{id}/stats", a.peerStats)
 	g("GET /api/v1/peers/{id}/sessions", a.peerSessions)
+	g("GET /api/v1/peers/{id}/setup", a.getSetup)
+	g("DELETE /api/v1/peers/{id}/setup", a.revokeSetup)
+
+	// Setup links work without signing in: the token in the link is the
+	// credential.
+	mux.HandleFunc("GET /api/v1/setup/{token}", a.setupInfo)
+	mux.HandleFunc("POST /api/v1/setup/{token}", a.setupRedeem)
 
 	// Full-access tokens (the iOS app) may change app settings and read logs.
 	// Password, tokens and backups stay with the admin account.
@@ -143,6 +148,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
 	})
+	mux.HandleFunc("GET /setup/{token}", setupPage)
 	mux.Handle("/", webHandler())
 
 	csrf := http.NewCrossOriginProtection()
@@ -505,6 +511,7 @@ type peerView struct {
 	EffKeepalive int         `json:"effectiveKeepalive"`
 	Created      time.Time   `json:"created"`
 	ConfigIssued *time.Time  `json:"configIssued"`
+	Setup        *setupView  `json:"setup"` // null = no pending setup link
 	Stats        PeerSummary `json:"stats"`
 }
 
@@ -513,7 +520,7 @@ func (a *App) peerView(c *Config, p *Peer) peerView {
 		ID: p.ID, Name: p.Name, Note: p.Note, Enabled: p.Enabled, PublicKey: p.PublicKey,
 		HasPSK: p.PresharedKey != "", IPv4: p.IPv4, DNS: p.DNS, AllowedIPs: p.AllowedIPs, Keepalive: p.Keepalive,
 		EffDNS: peerDNS(c, p), EffAllowed: peerAllowedIPs(c, p), EffKeepalive: peerKeepalive(c, p),
-		Created: p.Created, ConfigIssued: p.ConfigIssued, Stats: a.stats.Summary(p.ID),
+		Created: p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
 	}
 	if c.Server.IPv6Enabled {
 		v.IPv6 = mapIPv6(netip.MustParsePrefix(c.Server.IPv6), netip.MustParseAddr(p.IPv4)).String()
@@ -545,21 +552,19 @@ func (a *App) getPeer(w http.ResponseWriter, r *http.Request) {
 type issuedConfig struct {
 	Peer       peerView `json:"peer"`
 	Config     string   `json:"config"`
-	QR         string   `json:"qr,omitempty"`
-	HasPrivKey bool     `json:"includesPrivateKey"`
+	QR         string   `json:"qr"`
+	HasPrivKey bool     `json:"includesPrivateKey"` // always true; kept for older clients
 	ApplyError string   `json:"applyError"`
 }
 
-// newKeys returns a fresh key pair, or only the given public key when the
-// client made its own keys.
-func newKeys(clientPublic string) (priv, pub string, err error) {
-	if clientPublic != "" {
-		k, err := wgtypes.ParseKey(strings.TrimSpace(clientPublic))
-		if err != nil {
-			return "", "", badRequest("public key is not a valid WireGuard key")
-		}
-		return "", k.String(), nil
-	}
+// linkCreated answers a create or issue request that asked for a setup link.
+type linkCreated struct {
+	Peer       peerView    `json:"peer"`
+	Setup      setupSecret `json:"setup"`
+	ApplyError string      `json:"applyError"`
+}
+
+func newKeys() (priv, pub string, err error) {
 	k, err := newPrivateKey()
 	if err != nil {
 		return "", "", err
@@ -570,15 +575,22 @@ func newKeys(clientPublic string) (priv, pub string, err error) {
 func (a *App) issue(id, priv string) (issuedConfig, error) {
 	cfg := a.store.Get()
 	_, p := cfg.peerByID(id)
-	out := issuedConfig{Peer: a.peerView(cfg, p), Config: clientConfig(cfg, p, priv), HasPrivKey: priv != ""}
-	if priv != "" {
-		qr, err := qrDataURL(out.Config)
-		if err != nil {
-			return out, err
-		}
-		out.QR = qr
+	out := issuedConfig{Peer: a.peerView(cfg, p), Config: clientConfig(cfg, p, priv), HasPrivKey: true}
+	qr, err := qrDataURL(out.Config)
+	if err != nil {
+		return out, err
 	}
+	out.QR = qr
 	return out, nil
+}
+
+func (a *App) linkCreated(r *http.Request, id string) (linkCreated, error) {
+	cfg := a.store.Get()
+	_, p := cfg.peerByID(id)
+	out := linkCreated{Peer: a.peerView(cfg, p)}
+	sec, err := secretFor(r, p.Setup)
+	out.Setup = sec
+	return out, err
 }
 
 func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
@@ -589,22 +601,35 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 		DNS          []string `json:"dns"`
 		AllowedIPs   []string `json:"allowedIPs"`
 		Keepalive    *int     `json:"keepalive"`
-		PublicKey    string   `json:"publicKey"`
 		PresharedKey *bool    `json:"presharedKey"`
+		setupRequest
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, err)
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
-	priv, pub, err := newKeys(in.PublicKey)
+	link, err := in.newLink()
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	p := Peer{
-		ID: newID(), Name: in.Name, Note: strings.TrimSpace(in.Note), Enabled: true, PublicKey: pub,
+		ID: newID(), Name: in.Name, Note: strings.TrimSpace(in.Note), Enabled: true,
 		DNS: in.DNS, AllowedIPs: in.AllowedIPs, Keepalive: in.Keepalive, Created: time.Now().UTC(),
+	}
+	// With a link, the keys are made when the link is opened.
+	var priv string
+	if in.wantsLink() {
+		p.Setup = link
+	} else {
+		var pub string
+		if priv, pub, err = newKeys(); err != nil {
+			writeErr(w, err)
+			return
+		}
+		now := time.Now().UTC()
+		p.PublicKey, p.ConfigIssued = pub, &now
 	}
 	if in.PresharedKey == nil || *in.PresharedKey {
 		psk, err := newPresharedKey()
@@ -614,8 +639,6 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 		}
 		p.PresharedKey = psk.String()
 	}
-	now := time.Now().UTC()
-	p.ConfigIssued = &now
 	err = a.store.Update(func(c *Config) error {
 		if err := validatePeerName(p.Name); err != nil {
 			return &userError{err.Error()}
@@ -636,7 +659,16 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	a.audit(r, "peer created", "peer", p.Name, "ip", p.IPv4)
+	a.audit(r, "peer created", "peer", p.Name, "ip", p.IPv4, "delivery", map[bool]string{true: "link", false: "show"}[in.wantsLink()])
+	if in.wantsLink() {
+		out, err := a.linkCreated(r, p.ID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, out)
+		return
+	}
 	out, err := a.issue(p.ID, priv)
 	if err != nil {
 		writeErr(w, err)
@@ -751,19 +783,45 @@ func (a *App) deletePeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applyError": a.apply()})
 }
 
-// issueConfig replaces the peer's keys. The old device stops working.
+// issueConfig replaces the peer's keys. The old device stops working. With
+// a setup link, the keys are replaced only when the link is opened.
 func (a *App) issueConfig(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var in struct {
-		PublicKey string `json:"publicKey"`
-	}
+	var in setupRequest
 	if r.ContentLength > 0 {
 		if err := readJSON(r, &in); err != nil {
 			writeErr(w, err)
 			return
 		}
 	}
-	priv, pub, err := newKeys(in.PublicKey)
+	link, err := in.newLink()
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if in.wantsLink() {
+		var name string
+		if err := a.store.Update(func(c *Config) error {
+			_, p := c.peerByID(id)
+			if p == nil {
+				return badRequest("no such peer")
+			}
+			p.Setup, name = link, p.Name
+			return nil
+		}); err != nil {
+			writeErr(w, err)
+			return
+		}
+		a.audit(r, "setup link created", "peer", name, "expires", link.Expires)
+		out, err := a.linkCreated(r, id)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	priv, pub, err := newKeys()
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -780,7 +838,8 @@ func (a *App) issueConfig(w http.ResponseWriter, r *http.Request) {
 			return badRequest("no such peer")
 		}
 		now := time.Now().UTC()
-		p.PublicKey, p.ConfigIssued, name = pub, &now, p.Name
+		// A config issued here replaces any pending link.
+		p.PublicKey, p.ConfigIssued, p.Setup, name = pub, &now, nil, p.Name
 		if p.PresharedKey != "" {
 			p.PresharedKey = psk.String()
 		}

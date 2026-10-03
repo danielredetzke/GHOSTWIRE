@@ -109,6 +109,10 @@
 
   function peerState(p) {
     if (!p.enabled) return { key: 'disabled', label: 'Disabled', dot: 'dot bad' };
+    if (!p.publicKey) {
+      if (p.setup && !p.setup.expired) return { key: 'setup', label: 'Waiting for setup', dot: 'dot warn' };
+      return { key: 'nokey', label: p.setup ? 'Setup link expired' : 'No config yet', dot: 'dot off' };
+    }
     if (p.stats.online) return { key: 'online', label: 'Online · ' + ago(p.stats.lastHandshake), dot: 'dot ok' };
     if (p.stats.lastHandshake) return { key: 'offline', label: 'Offline · ' + ago(p.stats.lastHandshake), dot: 'dot' };
     return { key: 'never', label: 'Never connected', dot: 'dot off' };
@@ -230,6 +234,52 @@
       h('pre', { class: 'code' }, res.config),
       h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done'))));
     d.addEventListener('close', () => { applied(res); if (onClose) onClose(); });
+  }
+
+  // linkDialog shows a setup link with its PIN, to send to the device's owner.
+  function linkDialog(name, setup, onClose) {
+    const share = navigator.share
+      ? h('button', { type: 'button', class: 'btn', onClick: () => navigator.share({ title: 'VPN setup for ' + name, url: setup.url }).catch(() => {}) }, 'Share…')
+      : null;
+    const d = dialog((close) => h('div', { class: 'dlg' },
+      h('h2', null, 'Setup link for ' + name),
+      h('div', { class: 'notice' }, setup.pin
+        ? 'Anyone with this link and the PIN can set up this peer once. Send the PIN separately, e.g. by phone or another messenger.'
+        : 'Anyone with this link can set up this peer once. Send it only to the device\'s owner.'),
+      h('div', { class: 'field' }, h('label', { htmlFor: 'sl' }, 'Link'),
+        h('div', { class: 'row' }, h('input', { id: 'sl', class: 'mono', value: setup.url, readOnly: true, onFocus: (e) => e.target.select() }),
+          h('button', { type: 'button', class: 'btn primary', onClick: () => copy(setup.url) }, 'Copy link'), share)),
+      h('div', { class: 'qrrow' },
+        h('img', { class: 'qr small', src: setup.qr, alt: 'QR code of the setup link for ' + name }),
+        h('dl', { class: 'kv grow' },
+          setup.pin ? [h('dt', null, 'PIN'), h('dd', { class: 'pinrow' }, h('span', { class: 'pinval' }, setup.pin), h('button', { type: 'button', class: 'btn small', onClick: () => copy(setup.pin) }, 'Copy'))] : null,
+          h('dt', null, 'Valid until'), h('dd', null, fmtStamp(setup.expires)),
+          h('dt', null, 'Uses'), h('dd', null, 'Once. Then the link stops working.'))),
+      h('p', { class: 'hint' }, 'The QR code holds only the link, not the config. Until the link is used, you can copy it again or revoke it on the peer\'s page.'),
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done'))));
+    d.addEventListener('close', () => { if (onClose) onClose(); });
+  }
+
+  // handover is the "Show it here" / "Send a setup link" choice used when a
+  // config is created or issued again.
+  function handover({ showHint, linkHint, onChange }) {
+    let mode = 'show';
+    const hours = h('select', { id: 'lh' }, [[1, '1 hour'], [24, '24 hours'], [168, '7 days']].map(([v, t]) => h('option', { value: String(v), selected: v === 24 }, t)));
+    const pin = h('input', { type: 'checkbox', checked: true });
+    const more = h('div', { class: 'linkopts', hidden: true },
+      h('div', { class: 'field' }, h('label', { htmlFor: 'lh' }, 'Link valid for'), hours),
+      h('label', { class: 'check' }, pin, h('span', null, 'Require a PIN', h('br'), h('span', { class: 'hint' }, 'Send it by another channel than the link'))));
+    const opt = (v, title, hint) => h('label', { class: 'opt' },
+      h('input', { type: 'radio', name: 'handover', value: v, checked: v === mode, onChange: () => { mode = v; more.hidden = v !== 'link'; if (onChange) onChange(); } }),
+      h('span', null, h('strong', null, title), h('br'), h('span', { class: 'hint' }, hint)));
+    return {
+      el: h('fieldset', null, h('legend', { class: 'legend' }, 'Hand over the config'),
+        opt('show', 'Show it here', showHint),
+        opt('link', 'Send a setup link', linkHint),
+        more),
+      link: () => mode === 'link',
+      body: () => mode === 'link' ? { delivery: 'link', linkHours: Number(hours.value), linkPIN: pin.checked } : {},
+    };
   }
 
   // ---------- chart ----------
@@ -512,7 +562,7 @@
       const rows = data.peers.filter((p) => {
         const st = peerState(p).key;
         const hit = !q || (p.name + ' ' + p.ipv4 + ' ' + p.note).toLowerCase().includes(q);
-        const keep = filter === 'all' || filter === st || (filter === 'offline' && (st === 'offline' || st === 'never'));
+        const keep = filter === 'all' || filter === st || (filter === 'offline' && ['offline', 'never', 'setup', 'nokey'].includes(st));
         return hit && keep;
       });
       tbody.replaceChildren(...rows.map((p) => h('tr', null,
@@ -597,7 +647,6 @@
     const name = h('input', { id: 'n', autocomplete: 'off', required: true });
     const note = h('input', { id: 'no' });
     const ip = h('input', { id: 'ip', class: 'mono', placeholder: 'Next free address' });
-    const pub = h('textarea', { id: 'pk', class: 'mono', rows: 2, placeholder: 'Base64 public key from the device', hidden: true, 'aria-label': 'Client public key' });
     const psk = h('input', { type: 'checkbox', checked: true });
     const preview = h('pre', { class: 'code' });
     const ch = overrideChoices(srv, null);
@@ -605,19 +654,30 @@
     const dns = choice({ id: 'dns', label: 'DNS', ...ch.dns, placeholder: '9.9.9.9, 149.112.112.112', onChange: update });
     const allowed = choice({ id: 'ai', label: 'Route through the VPN (AllowedIPs)', ...ch.allowed, placeholder: '10.0.0.0/24, 192.168.1.0/24', hint: 'Used in the client config', onChange: update });
     const ka = choice({ id: 'ka', label: 'Persistent keepalive', ...ch.ka, placeholder: 'Seconds', hint: 'Keeps the tunnel open behind NAT', onChange: update });
-    let keyMode = 'generate';
+    const ho = handover({
+      showHint: 'QR code and download right after you click Create. Best when the device is next to you.',
+      linkHint: 'A one-time link you send to the device\'s owner. Keys are made when the link is opened and never stored.',
+      onChange: update,
+    });
+    const qrBox = h('div', { class: 'ph' });
 
     function drawPreview() {
+      const link = ho.link();
+      submit.textContent = link ? 'Create peer and link' : 'Create peer';
+      qrBox.replaceChildren(link ? 'Setup link' : 'QR code', h('br'), 'after creation');
+      aside.textContent = link
+        ? 'With a setup link, keys are created when the recipient opens it. Until then the peer is inactive.'
+        : 'Keys are created when you click Create peer. Then the config can be downloaded or scanned once.';
       let o;
       try { o = overrides(dns, allowed, ka, srv); } catch { o = {}; }
       const d = srv.clientDefaults;
       const lines = ['[Interface]',
-        'PrivateKey = ' + (keyMode === 'generate' ? '‹generated on create›' : '‹stays on the device›'),
+        'PrivateKey = ' + (link ? '‹made when the link is opened›' : '‹generated on create›'),
         'Address = ' + (ip.value || '‹next free›') + '/' + srv.ipv4.split('/')[1] + (srv.ipv6Enabled ? ',‹mapped IPv6›' : '')];
       const dnsList = o.dns === undefined || o.dns === null ? d.dns : o.dns;
       if (dnsList.length) lines.push('DNS = ' + dnsList.join(', '));
       lines.push('', '[Peer]', 'PublicKey = ' + srv.publicKey);
-      if (psk.checked) lines.push('PresharedKey = ‹generated on create›');
+      if (psk.checked) lines.push('PresharedKey = ' + (link ? '‹made when the link is opened›' : '‹generated on create›'));
       lines.push('Endpoint = ' + (srv.endpoint || '‹set the endpoint in Server›') + ':' + (srv.endpointPort || srv.listenPort));
       lines.push('AllowedIPs = ' + ((o.allowedIPs == null ? d.allowedIPs : o.allowedIPs).join(', ')));
       const k = o.keepalive == null ? d.keepalive : o.keepalive;
@@ -625,23 +685,21 @@
       preview.textContent = lines.join('\n');
     }
 
-    const keyOpt = (v, title, hint) => h('label', { class: 'opt' },
-      h('input', { type: 'radio', name: 'keys', value: v, checked: v === keyMode, onChange: () => { keyMode = v; pub.hidden = v !== 'paste'; drawPreview(); } }),
-      h('span', null, h('strong', null, title), h('br'), h('span', { class: 'hint' }, hint)));
-
+    const aside = h('p', { class: 'lead' });
     const submit = h('button', { type: 'submit', class: 'btn primary' }, 'Create peer');
     const form = h('form', { class: 'card grow', onSubmit: async (e) => {
       e.preventDefault();
       err.textContent = '';
       let body;
       try {
-        body = { name: name.value.trim(), note: note.value.trim(), ipv4: ip.value.trim(), presharedKey: psk.checked, ...overrides(dns, allowed, ka, srv) };
+        body = { name: name.value.trim(), note: note.value.trim(), ipv4: ip.value.trim(), presharedKey: psk.checked, ...overrides(dns, allowed, ka, srv), ...ho.body() };
       } catch (x) { err.textContent = x.message; return; }
-      if (keyMode === 'paste') body.publicKey = pub.value.trim();
       submit.disabled = true;
       try {
         const res = await api('POST', '/peers', body);
-        configDialog(res, () => { location.hash = '#/peers/' + res.peer.id; });
+        const done = () => { location.hash = '#/peers/' + res.peer.id; };
+        if (res.setup) linkDialog(res.peer.name, res.setup, done);
+        else configDialog(res, done);
       } catch (x) {
         err.textContent = x.message;
         submit.disabled = false;
@@ -653,12 +711,8 @@
       h('div', { class: 'field' }, h('label', { htmlFor: 'ip' }, 'IPv4 address'), ip, h('span', { class: 'hint' }, 'Leave empty for the next free address in ' + srv.ipv4)),
       srv.ipv6Enabled ? h('div', { class: 'field' }, h('label', null, 'IPv6 address'), h('input', { class: 'mono', readOnly: true, value: 'Derived from the IPv4 address' })) : null),
     h('div', { class: 'grid section' }, allowed.el, dns.el, ka.el),
-    h('fieldset', { class: 'section' },
-      h('legend', { class: 'legend' }, 'Keys'),
-      keyOpt('generate', 'Generate here', 'The private key appears once in the config and QR code. It isn\'t stored.'),
-      keyOpt('paste', 'Paste the client\'s public key', 'For clients that make their own keys'),
-      pub,
-      h('label', { class: 'check' }, psk, 'Add a preshared key')),
+    h('div', { class: 'section' }, h('label', { class: 'check' }, psk, 'Add a preshared key')),
+    h('div', { class: 'section' }, ho.el),
     err,
     h('div', { class: 'formfoot' }, h('a', { class: 'btn', href: '#/peers' }, 'Cancel'), submit));
     for (const el of [ip, psk]) el.addEventListener('input', drawPreview);
@@ -667,13 +721,13 @@
 
     fill(wrap,
       h('a', { class: 'back', href: '#/peers' }, '← Peers'),
-      h('div', null, h('h1', null, 'Add peer'), h('p', { class: 'sub' }, 'Creates a key pair, assigns the next free address and adds the peer to ' + srv.interface + ' without a restart.')),
+      h('div', null, h('h1', null, 'Add peer'), h('p', { class: 'sub' }, 'Assigns the next free address and adds the peer to ' + srv.interface + ' without a restart.')),
       h('div', { class: 'split' }, form,
         h('aside', { class: 'card aside', 'aria-labelledby': 'pv' },
           h('h2', { id: 'pv' }, 'Client config preview'),
-          h('p', { class: 'lead' }, 'Keys are created when you click Create peer. Then the config can be downloaded or scanned once.'),
+          aside,
           preview,
-          h('div', { class: 'qrrow section' }, h('div', { class: 'ph' }, 'QR code', h('br'), 'after creation')))));
+          h('div', { class: 'qrrow section' }, qrBox))));
     name.focus();
   }
 
@@ -714,25 +768,53 @@
         location.hash = '#/peers';
       } catch (e) { toast(e.message, true); }
     };
-    const reissue = async (publicKey) => {
-      if (!publicKey && !await confirmDialog({ title: 'Issue a new config?', text: 'New keys are created. The device that uses the current config stops working until it gets the new one.', ok: 'Issue new config' })) return;
-      try {
-        const res = await api('POST', '/peers/' + id + '/issue-config', publicKey ? { publicKey } : undefined);
-        configDialog(res, render);
-      } catch (e) { toast(e.message, true); }
-    };
-    const pasteKey = () => {
-      const inp = h('textarea', { class: 'mono', rows: 2, 'aria-label': 'Public key' });
-      const e = h('p', { class: 'err-text' });
+    const reissue = () => {
+      const ho = handover({
+        showHint: 'New keys now; QR code and download on this screen',
+        linkHint: p.publicKey ? 'The current config keeps working until the link is opened' : 'A one-time link you send to the device\'s owner',
+      });
+      const e = h('p', { class: 'err-text', role: 'alert' });
       dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
         ev.preventDefault();
-        close();
-        await reissue(inp.value.trim());
+        e.textContent = '';
+        try {
+          const res = await api('POST', '/peers/' + id + '/issue-config', ho.body());
+          close();
+          if (res.setup) linkDialog(p.name, res.setup, render);
+          else configDialog(res, render);
+        } catch (x) { e.textContent = x.message; }
       } },
-      h('h2', null, 'Use a key from the device'),
-      h('p', null, 'Paste the public key the device generated. The current config stops working.'),
-      inp, e,
-      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Replace key'))));
+      h('h2', null, (p.publicKey ? 'Issue a new config for ' : 'Issue a config for ') + p.name + '?'),
+      p.publicKey ? h('p', null, 'New keys are created. The device that uses the current config stops working once it is replaced.') : null,
+      p.setup ? h('p', null, 'This replaces the current setup link.') : null,
+      ho.el, e,
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Continue'))));
+    };
+    const showLink = async () => {
+      try { linkDialog(p.name, await api('GET', '/peers/' + id + '/setup')); } catch (e) { toast(e.message, true); }
+    };
+    const copyLink = async () => {
+      try { copy((await api('GET', '/peers/' + id + '/setup')).url); } catch (e) { toast(e.message, true); }
+    };
+    const revoke = async () => {
+      if (!await confirmDialog({ title: 'Revoke the setup link?', text: 'The link stops working immediately.', ok: 'Revoke link', danger: true })) return;
+      try { await api('DELETE', '/peers/' + id + '/setup'); toast('Setup link revoked'); render(); } catch (e) { toast(e.message, true); }
+    };
+    const setupCard = () => {
+      const su = p.setup;
+      if (!su) return null;
+      return h('section', { class: 'card', 'aria-labelledby': 'sl' },
+        h('div', { class: 'cardhead' }, h('h2', { id: 'sl' }, 'Setup link'), h('span', { class: 'hint' }, su.expired ? 'Expired' : 'Not opened yet')),
+        h('dl', { class: 'kv' },
+          h('dt', null, su.expired ? 'Expired' : 'Expires'), h('dd', null, fmtStamp(su.expires)),
+          h('dt', null, 'PIN'), h('dd', null, su.pinRequired ? 'Required · ' + su.pinFails + ' of 5 wrong tries' : 'Not required'),
+          p.publicKey ? [h('dt', null, 'Current config'), h('dd', null, 'Keeps working until the link is opened')] : null),
+        h('div', { class: 'actions section' }, su.expired
+          ? [h('button', { type: 'button', class: 'btn primary', onClick: reissue }, 'New link…'),
+            h('button', { type: 'button', class: 'btn', onClick: revoke }, 'Remove')]
+          : [h('button', { type: 'button', class: 'btn primary', onClick: copyLink }, 'Copy link'),
+            h('button', { type: 'button', class: 'btn', onClick: showLink }, su.pinRequired ? 'Show link & PIN' : 'Show link'),
+            h('button', { type: 'button', class: 'btn danger', onClick: revoke }, 'Revoke')]));
     };
 
     // settings form
@@ -765,6 +847,8 @@
           h('button', { type: 'button', class: 'btn', onClick: toggle }, p.enabled ? 'Disable' : 'Enable'),
           h('button', { type: 'button', class: 'btn danger', onClick: del }, 'Delete'))),
 
+      setupCard(),
+
       h('section', { class: 'card', 'aria-labelledby': 'traffic' },
         h('div', { class: 'cardhead' }, h('div', null, h('h2', { id: 'traffic' }, 'Traffic'), totals), pills),
         traffic),
@@ -777,16 +861,15 @@
             h('dt', null, 'Endpoint'), h('dd', { class: 'mono' }, p.stats.endpoint || '–'),
             h('dt', null, 'Location'), h('dd', null, fmtLocation(p.stats.location) || '–'),
             h('dt', null, 'Latest handshake'), h('dd', null, ago(p.stats.lastHandshake)),
-            h('dt', null, 'Public key'), h('dd', { class: 'mono' }, p.publicKey),
+            h('dt', null, 'Public key'), h('dd', { class: 'mono' }, p.publicKey || '–'),
             h('dt', null, 'Preshared key'), h('dd', null, p.hasPresharedKey ? 'Set' : 'None'),
             h('dt', null, 'All-time traffic'), h('dd', null, 'Download ' + fmtBytes(p.stats.downTotal) + ' · Upload ' + fmtBytes(p.stats.upTotal)))),
         h('section', { class: 'card' },
           h('h2', null, 'Client configuration'),
           h('p', { class: 'lead' }, 'This server doesn\'t keep the peer\'s private key. To set up a device again, issue a new config. The old one stops working.'),
           h('div', { class: 'actions' },
-            h('button', { type: 'button', class: 'btn', onClick: () => reissue() }, 'Issue new config & QR'),
-            h('button', { type: 'button', class: 'btn', onClick: pasteKey }, 'Use a key from the device…')),
-          h('p', { class: 'hint', style: { margin: '12px 0 0' } }, p.configIssued ? 'Last issued ' + fmtDate(p.configIssued) + '.' : 'Created with a key from the device.'))),
+            h('button', { type: 'button', class: 'btn', onClick: reissue }, p.publicKey ? 'Issue new config…' : 'Issue config…')),
+          h('p', { class: 'hint', style: { margin: '12px 0 0' } }, p.configIssued ? 'Last issued ' + fmtDate(p.configIssued) + '.' : 'No config issued yet.'))),
 
       h('section', { class: 'card flush', 'aria-labelledby': 'hist' },
         h('div', { class: 'cardhead' }, h('h2', { id: 'hist' }, 'Connection history'),

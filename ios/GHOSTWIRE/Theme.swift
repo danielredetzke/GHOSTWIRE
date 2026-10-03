@@ -104,10 +104,11 @@ struct Notice: View {
 }
 
 enum PeerState {
-    case online(Date), offline(Date), never, disabled
+    case online(Date), offline(Date), never, disabled, waiting, noConfig
 
     init(_ p: Peer) {
         if !p.enabled { self = .disabled }
+        else if p.publicKey.isEmpty { self = p.setup.map { !$0.expired } == true ? .waiting : .noConfig }
         else if let h = p.stats.lastHandshake { self = p.stats.online ? .online(h) : .offline(h) }
         else { self = .never }
     }
@@ -118,13 +119,15 @@ enum PeerState {
         case .offline(let d): "Offline · " + ago(d)
         case .never: "Never connected"
         case .disabled: "Disabled"
+        case .waiting: "Waiting for setup"
+        case .noConfig: "No config yet"
         }
     }
 
     var key: String {
         switch self {
         case .online: "online"
-        case .offline, .never: "offline"
+        case .offline, .never, .waiting, .noConfig: "offline"
         case .disabled: "disabled"
         }
     }
@@ -136,7 +139,8 @@ struct StatusDot: View {
         switch state {
         case .online: Circle().fill(Color.gwGood).frame(width: 8, height: 8)
         case .offline: Circle().fill(Color.gray).frame(width: 8, height: 8)
-        case .never: Circle().stroke(Color.gray, lineWidth: 1.5).frame(width: 8, height: 8)
+        case .never, .noConfig: Circle().stroke(Color.gray, lineWidth: 1.5).frame(width: 8, height: 8)
+        case .waiting: Circle().fill(Color.gwUp).frame(width: 8, height: 8)
         case .disabled: Circle().fill(Color.gwBad).frame(width: 8, height: 8)
         }
     }

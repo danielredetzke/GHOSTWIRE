@@ -109,8 +109,6 @@ struct AddPeerView: View {
     @State private var note = ""
     @State private var ipv4 = ""
     @State private var overrides = PeerOverrides()
-    @State private var pasteKey = false
-    @State private var publicKey = ""
     @State private var psk = true
     @State private var error: String?
     @State private var busy = false
@@ -164,23 +162,11 @@ struct AddPeerView: View {
             OverrideSections(o: $overrides, server: server)
 
             Section {
-                Picker("Keys", selection: $pasteKey) {
-                    Text("Generate here").tag(false)
-                    Text("Paste the client's public key").tag(true)
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-                if pasteKey {
-                    TextField("Public key", text: $publicKey)
-                        .font(.mono(.footnote))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
                 Toggle("Add a preshared key", isOn: $psk)
             } header: {
                 Text("Keys")
             } footer: {
-                Text(pasteKey ? "For clients that make their own keys." : "The private key appears once in the config and QR code. It isn't stored.")
+                Text("The private key appears once in the config and QR code. It isn't stored.")
             }
 
             if let error {
@@ -201,7 +187,6 @@ struct AddPeerView: View {
             body["note"] = note.trimmingCharacters(in: .whitespaces)
             body["ipv4"] = ipv4.trimmingCharacters(in: .whitespaces)
             body["presharedKey"] = psk
-            if pasteKey { body["publicKey"] = publicKey.trimmingCharacters(in: .whitespacesAndNewlines) }
             let r: IssuedConfig = try await api.send("POST", "/peers", body)
             session.reportApply(r.applyError)
             issued = r

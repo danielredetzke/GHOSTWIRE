@@ -118,7 +118,14 @@ type Peer struct {
 	Keepalive    *int       `json:"keepalive,omitempty"`  // nil = server default
 	Created      time.Time  `json:"created"`
 	ConfigIssued *time.Time `json:"configIssued,omitempty"`
+	// Setup is a pending one-time setup link. A peer created with a link has
+	// no public key until the link is opened.
+	Setup *SetupLink `json:"setup,omitempty"`
 }
+
+// hasKey reports whether the peer has a public key, i.e. it can be in the
+// kernel. A peer waiting for its setup link has none yet.
+func (p *Peer) hasKey() bool { return p.PublicKey != "" }
 
 type LogConfig struct {
 	Level     string `json:"level"` // debug | info | warn | error
@@ -346,7 +353,7 @@ func (c *Config) validate() error {
 			return fmt.Errorf("address %s is used twice", ip)
 		}
 		ips[ip] = true
-		if keys[p.PublicKey] {
+		if p.hasKey() && keys[p.PublicKey] {
 			return fmt.Errorf("peer %q: public key is used by another peer", p.Name)
 		}
 		keys[p.PublicKey] = true
