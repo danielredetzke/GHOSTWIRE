@@ -78,11 +78,12 @@ struct PrimaryButtonStyle: ButtonStyle {
 }
 
 struct SecondaryButtonStyle: ButtonStyle {
+    var ink = Color.gwText
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.body.weight(.medium))
             .frame(maxWidth: .infinity, minHeight: 48)
-            .foregroundStyle(Color.gwText)
+            .foregroundStyle(ink)
             .background(Color.gwSurface.opacity(configuration.isPressed ? 0.7 : 1), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gwLine))
     }

@@ -30,9 +30,7 @@ struct IssuedConfigContent: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                Notice(text: issued.includesPrivateKey
-                       ? "This is the only time the private key is shown. Scan or share it now: it is not stored on the server."
-                       : "The device keeps its own private key. Put it into the PrivateKey line.")
+                Notice(text: "This is the only time the private key is shown. Scan or share it now: it is not stored on the server.")
                 if let img = qrImage {
                     Image(uiImage: img)
                         .interpolation(.none)
@@ -71,21 +69,5 @@ struct IssuedConfigContent: View {
             .padding(16)
         }
         .background(Color.gwGround)
-    }
-}
-
-/// IssuedConfigContent in its own sheet, for re-issued configs.
-struct IssuedConfigView: View {
-    let issued: IssuedConfig
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            IssuedConfigContent(issued: issued)
-                .navigationTitle("Config for \(issued.peer.name)")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
-        .interactiveDismissDisabled()
     }
 }

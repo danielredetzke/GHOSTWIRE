@@ -145,6 +145,53 @@ nonisolated struct IssuedConfig: Decodable, Identifiable {
     var id: String { peer.id + peer.publicKey }
 }
 
+/// A setup link for the admin to send. It sets up a device once.
+nonisolated struct SetupSecret: Decodable, Hashable {
+    let url: String
+    let path: String
+    let pin: String?
+    let expires: Date
+    let qr: String
+}
+
+/// The answer to creating a peer or issuing a config with a setup link.
+nonisolated struct LinkCreated: Decodable {
+    let peer: Peer
+    let setup: SetupSecret
+    let applyError: String
+}
+
+/// A config shown now, or a setup link to send.
+enum IssueOutcome: Identifiable {
+    case config(IssuedConfig)
+    case link(LinkCreated)
+
+    var id: String {
+        switch self {
+        case .config(let c): c.id
+        case .link(let l): l.setup.path
+        }
+    }
+
+    var peer: Peer {
+        switch self {
+        case .config(let c): c.peer
+        case .link(let l): l.peer
+        }
+    }
+
+    var applyError: String {
+        switch self {
+        case .config(let c): c.applyError
+        case .link(let l): l.applyError
+        }
+    }
+}
+
+nonisolated struct PeerOnly: Decodable {
+    let peer: Peer
+}
+
 nonisolated struct ClientDefaults: Codable, Equatable {
     var dns: [String]
     var allowedIPs: [String]

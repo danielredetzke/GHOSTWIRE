@@ -9,8 +9,11 @@ struct PeerDetailView: View {
     @State private var range = "7d"
     @State private var points: [StatPoint] = []
     @State private var error: String?
-    @State private var issued: IssuedConfig?
-    @State private var confirmIssue = false
+    @State private var issuing = false
+    @State private var issueWithLink = false
+    @State private var showingLink = false
+    @State private var confirmRevoke = false
+    @State private var copiedLink = false
     @State private var confirmDelete = false
     @State private var editing = false
     @State private var sessions: [ConnSession] = []
@@ -23,6 +26,7 @@ struct PeerDetailView: View {
                 if let error { Notice(text: error, isError: true) }
                 if let p = peer {
                     header(p)
+                    if let s = p.setup { setupLink(p, s) }
                     traffic
                     connection(p)
                     history.id("history")
@@ -39,6 +43,8 @@ struct PeerDetailView: View {
         // Development: `-scrollToHistory YES` for screenshots of the history.
         .task(id: sessions.count) {
             if UserDefaults.standard.bool(forKey: "scrollToHistory"), !sessions.isEmpty { proxy.scrollTo("history", anchor: .top) }
+            // `-showSetupLink YES` opens the pending setup link.
+            if UserDefaults.standard.bool(forKey: "showSetupLink"), peer?.setup != nil { showingLink = true }
         }
         #endif
         }
@@ -61,12 +67,17 @@ struct PeerDetailView: View {
         } message: {
             Text("The device loses access immediately. Its traffic history is deleted too. This cannot be undone.")
         }
-        .confirmationDialog("Issue a new config?", isPresented: $confirmIssue, titleVisibility: .visible) {
-            Button("Issue new config") { Task { await issue() } }
+        .confirmationDialog("Revoke the setup link?", isPresented: $confirmRevoke, titleVisibility: .visible) {
+            Button("Revoke link", role: .destructive) { Task { await revoke() } }
         } message: {
-            Text("New keys are created. The device that uses the current config stops working until it gets the new one.")
+            Text("The link stops working immediately.")
         }
-        .sheet(item: $issued, onDismiss: { Task { await load() } }) { IssuedConfigView(issued: $0) }
+        .sheet(isPresented: $issuing, onDismiss: { Task { await load() } }) {
+            if let p = peer { IssueSheet(peer: p, startWithLink: issueWithLink) }
+        }
+        .sheet(isPresented: $showingLink) {
+            if let p = peer { SetupLinkSheet(peer: p) }
+        }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) {
             if let p = peer, let s = server { PeerEditView(peer: p, server: s) }
         }
@@ -181,14 +192,10 @@ struct PeerDetailView: View {
             Text("This server doesn't keep the peer's private key. To set up a device again, issue a new config. The old one stops working.")
                 .font(.footnote)
                 .foregroundStyle(Color.gwText2)
-            Button { confirmIssue = true } label: { Label("Issue new config & QR", systemImage: "qrcode") }
-                .buttonStyle(PrimaryButtonStyle())
-            if let s = p.setup {
-                Text(s.expired ? "The setup link expired \(fmtDate(s.expires)). Manage setup links in the web interface."
-                               : "A setup link is waiting to be opened (until \(fmtDate(s.expires))). Issuing a config here replaces it.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.gwWarnInk)
+            Button { issueWithLink = false; issuing = true } label: {
+                Label(p.publicKey.isEmpty ? "Issue config…" : "Issue new config…", systemImage: "qrcode")
             }
+            .buttonStyle(PrimaryButtonStyle())
             Text(p.configIssued.map { "Last issued \(fmtDate($0))." } ?? "No config issued yet.")
                 .font(.caption)
                 .foregroundStyle(Color.gwText2)
@@ -251,11 +258,57 @@ struct PeerDetailView: View {
         }
     }
 
-    private func issue() async {
+    private func setupLink(_ p: Peer, _ s: SetupInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                SectionTitle(text: "Setup link")
+                Spacer()
+                Text(s.expired ? "Expired" : "Not opened yet").font(.footnote).foregroundStyle(Color.gwText2)
+            }
+            KV(key: s.expired ? "Expired" : "Expires", value: fmtStamp(s.expires))
+            KV(key: "PIN", value: s.pinRequired ? "Required · \(s.pinFails) of 5 wrong tries" : "Not required")
+            if !p.publicKey.isEmpty {
+                KV(key: "Current config", value: "Keeps working until the link is opened")
+            }
+            if s.expired {
+                Button("New link…") { issueWithLink = true; issuing = true }
+                    .buttonStyle(PrimaryButtonStyle())
+                Button("Remove") { Task { await revoke() } }
+                    .buttonStyle(SecondaryButtonStyle())
+            } else {
+                Button { showingLink = true } label: {
+                    Label(s.pinRequired ? "Share link & PIN" : "Share link", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                HStack(spacing: 12) {
+                    Button { Task { await copyLink() } } label: {
+                        Label(copiedLink ? "Copied" : "Copy link", systemImage: copiedLink ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    Button("Revoke", role: .destructive) { confirmRevoke = true }
+                        .buttonStyle(SecondaryButtonStyle(ink: .gwErrInk))
+                }
+            }
+        }
+        .card()
+    }
+
+    private func copyLink() async {
         guard let api = session.api else { return }
         do {
-            let body: [String: Any?]? = nil
-            issued = try await api.send("POST", "/peers/\(peerID)/issue-config", body)
+            let s: SetupSecret = try await api.get("/peers/\(peerID)/setup")
+            UIPasteboard.general.string = s.url
+            copiedLink = true
+        } catch {
+            session.alert = session.message(for: error)
+        }
+    }
+
+    private func revoke() async {
+        guard let api = session.api else { return }
+        do {
+            let r: PeerOnly = try await api.send("DELETE", "/peers/\(peerID)/setup")
+            peer = r.peer
         } catch {
             session.alert = session.message(for: error)
         }

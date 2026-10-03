@@ -33,6 +33,10 @@ func fmtDate(_ date: Date?) -> String {
     return date.formatted(date: .abbreviated, time: .omitted)
 }
 
+func fmtStamp(_ date: Date) -> String {
+    date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+}
+
 /// "35 min", "2 h 5 min", "3 days".
 func fmtDuration(_ seconds: Int64) -> String {
     if seconds < 60 { return "under 1 min" }

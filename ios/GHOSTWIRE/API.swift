@@ -97,4 +97,12 @@ final class API {
     func send<T: Decodable>(_ method: String, _ path: String, _ body: [String: Any?]? = nil) async throws -> T {
         try Self.decoder.decode(T.self, from: try await data(method, path, body: body))
     }
+
+    /// Creates a peer or issues a config. The server answers with the config,
+    /// or with a setup link when the body asked for one.
+    func issue(_ path: String, _ body: [String: Any?]?) async throws -> IssueOutcome {
+        let d = try await data("POST", path, body: body)
+        if let l = try? Self.decoder.decode(LinkCreated.self, from: d) { return .link(l) }
+        return .config(try Self.decoder.decode(IssuedConfig.self, from: d))
+    }
 }

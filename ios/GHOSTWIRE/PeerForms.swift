@@ -110,22 +110,23 @@ struct AddPeerView: View {
     @State private var ipv4 = ""
     @State private var overrides = PeerOverrides()
     @State private var psk = true
+    @State private var handover = Handover()
     @State private var error: String?
     @State private var busy = false
-    @State private var issued: IssuedConfig?
+    @State private var issued: IssueOutcome?
 
     var body: some View {
         NavigationStack {
             Group {
                 if let issued {
-                    IssuedConfigContent(issued: issued)
+                    IssueOutcomeContent(outcome: issued)
                 } else if let server {
                     form(server)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.gwGround)
                 }
             }
-            .navigationTitle(issued == nil ? "Add peer" : "Config for \(issued?.peer.name ?? "")")
+            .navigationTitle(issued.map(outcomeTitle) ?? "Add peer")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if issued == nil {
@@ -166,8 +167,10 @@ struct AddPeerView: View {
             } header: {
                 Text("Keys")
             } footer: {
-                Text("The private key appears once in the config and QR code. It isn't stored.")
+                Text("The private key is never stored on the server.")
             }
+
+            HandoverSection(h: $handover)
 
             if let error {
                 Section { Text(error).foregroundStyle(Color.gwErrInk) }
@@ -187,7 +190,8 @@ struct AddPeerView: View {
             body["note"] = note.trimmingCharacters(in: .whitespaces)
             body["ipv4"] = ipv4.trimmingCharacters(in: .whitespaces)
             body["presharedKey"] = psk
-            let r: IssuedConfig = try await api.send("POST", "/peers", body)
+            body.merge(handover.body) { _, new in new }
+            let r = try await api.issue("/peers", body)
             session.reportApply(r.applyError)
             issued = r
         } catch {
