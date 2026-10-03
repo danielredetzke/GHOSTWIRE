@@ -437,7 +437,9 @@
     const err = h('p', { class: 'err-text', role: 'alert' });
     const user = h('input', { id: 'u', autocomplete: 'username', value: 'admin', required: true });
     const pw = h('input', { id: 'p', type: 'password', autocomplete: 'current-password', required: true });
-    const btn = h('button', { type: 'submit', class: 'btn primary' }, 'Sign in');
+    // On hover the label turns into its Japanese reading; screen readers keep "Sign in".
+    const btn = h('button', { type: 'submit', class: 'btn primary signin' },
+      h('span', { class: 'en' }, 'Sign in'), h('span', { class: 'ja', lang: 'ja', 'aria-hidden': 'true' }, 'サインイン'));
     const form = h('form', { class: 'loginform', onSubmit: async (e) => {
       e.preventDefault();
       err.textContent = '';
