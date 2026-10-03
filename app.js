@@ -405,8 +405,9 @@
     h('div', { class: 'field' }, h('label', { htmlFor: 'p' }, 'Password'), pw),
     err, btn);
     app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
-      brand(44),
-      form)));
+      brand(72),
+      form),
+      h('p', { class: 'loginfoot' }, 'WireGuard server manager')));
     pw.focus();
   }
 
