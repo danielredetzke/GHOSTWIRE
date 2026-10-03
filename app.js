@@ -48,8 +48,23 @@
     server: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
     settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
-    mark: '<path d="M4 12h16M12 4v16"/>',
   };
+
+  // The Kamon logo: a crest ring around the ghost. Same drawing as favicon.svg.
+  const LOGO = '<rect width="64" height="64" rx="14" fill="#1b1b1d"/><rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#fff" stroke-opacity="0.2"/>' +
+    '<circle cx="32" cy="32" r="22" fill="none" stroke="#fff" stroke-width="3.5"/><g transform="translate(32 33) scale(0.66) translate(-32 -33)">' +
+    '<path d="M18 50V30a14 14 0 0 1 28 0v20l-4.7-4-4.6 4-4.7-4-4.7 4-4.6-4z" fill="#fff"/><circle cx="27" cy="30" r="3.2" fill="#c8372d"/><circle cx="37" cy="30" r="3.2" fill="#c8372d"/></g>';
+
+  function logo(size) {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [k, v] of Object.entries({ width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': 'true' })) s.setAttribute(k, v);
+    s.innerHTML = LOGO;
+    return s;
+  }
+
+  // brand is the logo lockup: mark, wordmark and the katakana reading.
+  const brand = (size) => h('div', { class: 'brand' }, logo(size),
+    h('div', null, h('div', { class: 'wm' }, APP), h('div', { class: 'kana', lang: 'ja' }, 'ゴーストワイヤー')));
 
   // Icons are constant markup from ICONS, never data.
   function icon(name, size = 18, width = 1.7) {
@@ -274,7 +289,7 @@
     peerCount = h('span', { class: 'count' });
     navLinks = {};
     const nav = h('nav', { class: 'side', 'aria-label': 'Main' },
-      h('div', { class: 'brand' }, h('span', { class: 'mark' }, icon('mark', 14, 2.4)), APP),
+      brand(34),
       srvBox,
       NAV.map(([href, ic, label]) => (navLinks[href] = h('a', { class: 'nav', href }, icon(ic), label, ic === 'peers' ? peerCount : null))),
       h('div', { class: 'foot' },
@@ -375,7 +390,7 @@
     err, btn,
     h('p', { class: 'hint' }, 'After 5 failed attempts, sign-in is locked for 15 minutes.'));
     app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
-      h('div', { class: 'brand' }, h('span', { class: 'mark' }, icon('mark', 14, 2.4)), APP),
+      brand(44),
       form)));
     pw.focus();
   }
