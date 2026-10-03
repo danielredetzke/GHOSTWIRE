@@ -70,7 +70,9 @@ struct PeersView: View {
                     ForEach(filtered) { p in
                         NavigationLink(value: p.id) { PeerRow(peer: p, period: .month) }
                             .swipeActions(edge: .trailing) {
+                                // The app-wide ink tint would override the destructive red.
                                 Button(role: .destructive) { deleting = p } label: { Label("Delete", systemImage: "trash") }
+                                    .tint(Color.gwBad)
                                 Button { Task { await toggle(p) } } label: {
                                     Label(p.enabled ? "Disable" : "Enable", systemImage: p.enabled ? "pause.circle" : "play.circle")
                                 }
