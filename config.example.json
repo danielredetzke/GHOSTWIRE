@@ -1,0 +1,14 @@
+{
+  "web": {
+    "listen": ":443",
+    "httpListen": ":80",
+    "tls": {
+      "mode": "acme",
+      "domain": "vpn.example.net",
+      "email": "admin@example.net"
+    }
+  },
+  "server": {
+    "endpoint": "vpn.example.net"
+  }
+}

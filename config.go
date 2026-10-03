@@ -1,0 +1,485 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Config is the complete desired state of the service. It is persisted as
+// config.json and is the single source of truth: the kernel (interface, peers,
+// firewall) is reconciled to match it.
+type Config struct {
+	Version   int        `json:"version"`
+	Web       WebConfig  `json:"web"`
+	Admin     Admin      `json:"admin"`
+	APITokens []APIToken `json:"apiTokens"`
+	Server    Server     `json:"server"`
+	Peers     []Peer     `json:"peers"`
+	Log       LogConfig  `json:"log"`
+}
+
+type WebConfig struct {
+	Listen       string    `json:"listen"`     // HTTPS (or HTTP when tls.mode is "off") listen address
+	HTTPListen   string    `json:"httpListen"` // plain HTTP for ACME http-01 and redirects; "" disables
+	TLS          TLSConfig `json:"tls"`
+	SessionHours int       `json:"sessionHours"`
+}
+
+type TLSConfig struct {
+	Mode     string `json:"mode"` // acme | selfsigned | files | off
+	Domain   string `json:"domain,omitempty"`
+	Email    string `json:"email,omitempty"`
+	Staging  bool   `json:"staging,omitempty"` // use the Let's Encrypt staging CA
+	CertFile string `json:"certFile,omitempty"`
+	KeyFile  string `json:"keyFile,omitempty"`
+}
+
+type Admin struct {
+	Username     string `json:"username"`
+	PasswordHash string `json:"passwordHash"`
+}
+
+type APIToken struct {
+	ID      string    `json:"id"`
+	Name    string    `json:"name"`
+	Hash    string    `json:"hash"`
+	Scope   string    `json:"scope"` // rw | ro
+	Created time.Time `json:"created"`
+}
+
+type Server struct {
+	Interface      string         `json:"interface"`
+	PrivateKey     string         `json:"privateKey"`
+	KeyCreated     time.Time      `json:"keyCreated"`
+	ListenPort     int            `json:"listenPort"`
+	MTU            int            `json:"mtu"`
+	IPv4           string         `json:"ipv4"` // tunnel network, e.g. 10.84.12.0/24
+	IPv6           string         `json:"ipv6"` // tunnel network, e.g. fd11:5ee:bad:c0de::/64
+	IPv6Enabled    bool           `json:"ipv6Enabled"`
+	Endpoint       string         `json:"endpoint"`     // host name or IP clients connect to
+	EndpointPort   int            `json:"endpointPort"` // 0 = listenPort
+	UplinkV4       string         `json:"uplinkV4"`     // "" = interface of the default route
+	UplinkV6       string         `json:"uplinkV6"`
+	NAT            bool           `json:"nat"`
+	PeerToPeer     bool           `json:"peerToPeer"`
+	LANAccess      bool           `json:"lanAccess"`
+	OpenPort       bool           `json:"openPort"`
+	ClientDefaults ClientDefaults `json:"clientDefaults"`
+}
+
+type ClientDefaults struct {
+	DNS        []string `json:"dns"`
+	AllowedIPs []string `json:"allowedIPs"`
+	Keepalive  int      `json:"keepalive"`
+}
+
+// Peer is one client. Its private key is never stored: it is shown once when
+// the config is issued.
+type Peer struct {
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Note         string     `json:"note"`
+	Enabled      bool       `json:"enabled"`
+	PublicKey    string     `json:"publicKey"`
+	PresharedKey string     `json:"presharedKey,omitempty"`
+	IPv4         string     `json:"ipv4"`
+	DNS          []string   `json:"dns,omitempty"`        // nil = server default
+	AllowedIPs   []string   `json:"allowedIPs,omitempty"` // nil = server default
+	Keepalive    *int       `json:"keepalive,omitempty"`  // nil = server default
+	Created      time.Time  `json:"created"`
+	ConfigIssued *time.Time `json:"configIssued,omitempty"`
+}
+
+type LogConfig struct {
+	Level     string `json:"level"` // debug | info | warn | error
+	MaxSizeMB int    `json:"maxSizeMB"`
+	MaxFiles  int    `json:"maxFiles"`
+}
+
+const configVersion = 1
+
+// applyDefaults fills zero values. It never overwrites values that are set,
+// so a minimal hand-written config.json grows into a complete one.
+func (c *Config) applyDefaults() {
+	if c.Version == 0 {
+		c.Version = configVersion
+	}
+	if c.Web.Listen == "" {
+		c.Web.Listen = ":443"
+	}
+	if c.Web.TLS.Mode == "" {
+		if c.Web.TLS.Domain != "" {
+			c.Web.TLS.Mode = "acme"
+		} else {
+			c.Web.TLS.Mode = "selfsigned"
+		}
+	}
+	if c.Web.TLS.Mode == "acme" && c.Web.HTTPListen == "" {
+		c.Web.HTTPListen = ":80"
+	}
+	if c.Web.SessionHours == 0 {
+		c.Web.SessionHours = 12
+	}
+	if c.Admin.Username == "" {
+		c.Admin.Username = "admin"
+	}
+	s := &c.Server
+	if s.Interface == "" {
+		s.Interface = "wg0"
+	}
+	if s.ListenPort == 0 {
+		s.ListenPort = 51820
+	}
+	if s.MTU == 0 {
+		s.MTU = 1420
+	}
+	if s.ClientDefaults.DNS == nil {
+		s.ClientDefaults.DNS = []string{"9.9.9.9", "149.112.112.112"}
+	}
+	if s.ClientDefaults.AllowedIPs == nil {
+		s.ClientDefaults.AllowedIPs = []string{"0.0.0.0/0", "::/0"}
+	}
+	if c.Log.Level == "" {
+		c.Log.Level = "info"
+	}
+	if c.Log.MaxSizeMB == 0 {
+		c.Log.MaxSizeMB = 10
+	}
+	if c.Log.MaxFiles == 0 {
+		c.Log.MaxFiles = 5
+	}
+	if c.APITokens == nil {
+		c.APITokens = []APIToken{}
+	}
+	if c.Peers == nil {
+		c.Peers = []Peer{}
+	}
+}
+
+// initServer runs once, when the server has no key yet: it generates the key,
+// picks a free tunnel subnet and turns on the defaults that are booleans.
+func (c *Config) initServer() (bool, error) {
+	s := &c.Server
+	if s.PrivateKey != "" {
+		return false, nil
+	}
+	key, err := newPrivateKey()
+	if err != nil {
+		return false, err
+	}
+	s.PrivateKey = key.String()
+	s.KeyCreated = time.Now().UTC()
+	if s.IPv4 == "" {
+		n, err := randomSubnet(24)
+		if err != nil {
+			return false, err
+		}
+		s.IPv4 = n.String()
+	}
+	if s.IPv6 == "" {
+		s.IPv6 = "fd11:5ee:bad:c0de::/64"
+		s.IPv6Enabled = hasGlobalIPv6()
+	}
+	s.NAT = true
+	s.PeerToPeer = true
+	s.OpenPort = true
+	if s.Endpoint == "" {
+		s.Endpoint = c.Web.TLS.Domain
+	}
+	return true, nil
+}
+
+var peerNameRe = regexp.MustCompile(`^[a-zA-Z0-9.@_-]{1,32}$`)
+
+func validatePeerName(name string) error {
+	switch {
+	case !peerNameRe.MatchString(name):
+		return errors.New("name must be 1–32 characters: letters, digits and . @ _ -")
+	case strings.Trim(name, "0123456789") == "":
+		return errors.New("name cannot be only digits")
+	case strings.HasPrefix(name, "-") || strings.HasPrefix(name, "."):
+		return errors.New("name cannot start with - or .")
+	case name == "server":
+		return errors.New("name \"server\" is reserved")
+	}
+	return nil
+}
+
+func validateHostList(list []string, field string, wantCIDR bool) error {
+	for _, v := range list {
+		if wantCIDR {
+			if _, err := netip.ParsePrefix(v); err != nil {
+				return fmt.Errorf("%s: %q is not a network in CIDR notation", field, v)
+			}
+		} else if _, err := netip.ParseAddr(v); err != nil {
+			return fmt.Errorf("%s: %q is not an IP address", field, v)
+		}
+	}
+	return nil
+}
+
+// validate checks the whole config for consistency. It runs before every save.
+func (c *Config) validate() error {
+	s := &c.Server
+	if s.ListenPort < 1 || s.ListenPort > 65535 {
+		return errors.New("listen port must be 1–65535")
+	}
+	if s.EndpointPort < 0 || s.EndpointPort > 65535 {
+		return errors.New("endpoint port must be 0–65535")
+	}
+	if s.MTU < 1280 || s.MTU > 9000 {
+		return errors.New("MTU must be 1280–9000")
+	}
+	if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,15}$`).MatchString(s.Interface) {
+		return errors.New("interface name must be 1–15 characters: letters, digits, _ and -")
+	}
+	v4, err := netip.ParsePrefix(s.IPv4)
+	if err != nil || !v4.Addr().Is4() || v4.Bits() > 30 || v4.Bits() < 8 {
+		return errors.New("IPv4 network must be an IPv4 CIDR between /8 and /30")
+	}
+	if v4.Masked() != v4 {
+		return fmt.Errorf("IPv4 network must be the network address, e.g. %s", v4.Masked())
+	}
+	v6, err := netip.ParsePrefix(s.IPv6)
+	if err != nil || !v6.Addr().Is6() || v6.Bits() > 96 {
+		return errors.New("IPv6 network must be an IPv6 CIDR of /96 or larger")
+	}
+	if v6.Masked() != v6 {
+		return fmt.Errorf("IPv6 network must be the network address, e.g. %s", v6.Masked())
+	}
+	if s.Endpoint != "" && strings.ContainsAny(s.Endpoint, " /:") && net.ParseIP(s.Endpoint) == nil {
+		return errors.New("endpoint must be a host name or IP address without port")
+	}
+	if err := validateHostList(s.ClientDefaults.DNS, "DNS", false); err != nil {
+		return err
+	}
+	if err := validateHostList(s.ClientDefaults.AllowedIPs, "AllowedIPs", true); err != nil {
+		return err
+	}
+	if s.ClientDefaults.Keepalive < 0 || s.ClientDefaults.Keepalive > 3600 {
+		return errors.New("keepalive must be 0–3600 seconds")
+	}
+	switch c.Web.TLS.Mode {
+	case "acme":
+		if c.Web.TLS.Domain == "" {
+			return errors.New("tls.domain is required for Let's Encrypt")
+		}
+	case "files":
+		if c.Web.TLS.CertFile == "" || c.Web.TLS.KeyFile == "" {
+			return errors.New("tls.certFile and tls.keyFile are required for mode \"files\"")
+		}
+	case "selfsigned", "off":
+	default:
+		return fmt.Errorf("unknown tls.mode %q", c.Web.TLS.Mode)
+	}
+
+	names := map[string]bool{}
+	ips := map[netip.Addr]bool{}
+	keys := map[string]bool{}
+	for _, p := range c.Peers {
+		if err := validatePeerName(p.Name); err != nil {
+			return fmt.Errorf("peer %q: %w", p.Name, err)
+		}
+		if names[p.Name] {
+			return fmt.Errorf("peer name %q is used twice", p.Name)
+		}
+		names[p.Name] = true
+		ip, err := netip.ParseAddr(p.IPv4)
+		if err != nil || !v4.Contains(ip) {
+			return fmt.Errorf("peer %q: address %s is outside %s", p.Name, p.IPv4, v4)
+		}
+		if ip == v4.Addr() || ip == serverIPv4(v4) || ip == lastAddr(v4) {
+			return fmt.Errorf("peer %q: address %s is reserved", p.Name, ip)
+		}
+		if ips[ip] {
+			return fmt.Errorf("address %s is used twice", ip)
+		}
+		ips[ip] = true
+		if keys[p.PublicKey] {
+			return fmt.Errorf("peer %q: public key is used by another peer", p.Name)
+		}
+		keys[p.PublicKey] = true
+		if err := validateHostList(p.DNS, "DNS", false); err != nil {
+			return fmt.Errorf("peer %q: %w", p.Name, err)
+		}
+		if err := validateHostList(p.AllowedIPs, "AllowedIPs", true); err != nil {
+			return fmt.Errorf("peer %q: %w", p.Name, err)
+		}
+		if p.Keepalive != nil && (*p.Keepalive < 0 || *p.Keepalive > 3600) {
+			return fmt.Errorf("peer %q: keepalive must be 0–3600 seconds", p.Name)
+		}
+	}
+	return nil
+}
+
+func (c *Config) peerByID(id string) (int, *Peer) {
+	for i := range c.Peers {
+		if c.Peers[i].ID == id {
+			return i, &c.Peers[i]
+		}
+	}
+	return -1, nil
+}
+
+func (c *Config) clone() *Config {
+	b, _ := json.Marshal(c)
+	var out Config
+	_ = json.Unmarshal(b, &out)
+	return &out
+}
+
+// Store guards the config and persists every change atomically.
+type Store struct {
+	mu   sync.Mutex
+	path string
+	cfg  *Config
+	// onChange is called after a successful update, outside the lock.
+	onChange func(old, new *Config)
+}
+
+func loadConfigFile(path string) (*Config, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		b = []byte("{}")
+	} else if err != nil {
+		return nil, err
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if c.Version > configVersion {
+		return nil, fmt.Errorf("%s: config version %d is newer than this program supports", path, c.Version)
+	}
+	c.applyDefaults()
+	return &c, nil
+}
+
+func openStore(path string) (*Store, error) {
+	c, err := loadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.initServer(); err != nil {
+		return nil, err
+	}
+	if err := c.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	s := &Store{path: path, cfg: c}
+	if err := writeFileAtomic(path, c, 0o600); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Get returns a deep copy that the caller may read freely.
+func (s *Store) Get() *Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.clone()
+}
+
+// Update applies fn to a copy, validates and saves it, then swaps it in.
+func (s *Store) Update(fn func(c *Config) error) error {
+	s.mu.Lock()
+	old := s.cfg
+	next := old.clone()
+	if err := fn(next); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	next.applyDefaults()
+	if err := next.validate(); err != nil {
+		s.mu.Unlock()
+		return &userError{err.Error()}
+	}
+	if err := writeFileAtomic(s.path, next, 0o600); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.cfg = next
+	s.mu.Unlock()
+	if s.onChange != nil {
+		s.onChange(old.clone(), next.clone())
+	}
+	return nil
+}
+
+// Reload re-reads config.json from disk, e.g. after "-passwd" changed it.
+func (s *Store) Reload() error {
+	c, err := loadConfigFile(s.path)
+	if err != nil {
+		return err
+	}
+	if err := c.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	old := s.cfg
+	s.cfg = c
+	s.mu.Unlock()
+	if s.onChange != nil {
+		s.onChange(old.clone(), c.clone())
+	}
+	return nil
+}
+
+// writeFileAtomic writes JSON to a temp file in the same directory, syncs it
+// and renames it over the target, so a crash never leaves a partial file.
+func writeFileAtomic(path string, v any, mode os.FileMode) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	// When root edits the file (e.g. "-passwd" under sudo), keep the owner so
+	// the service user can still read it.
+	if os.Geteuid() == 0 {
+		if st, err := os.Stat(path); err == nil {
+			if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+				_ = f.Chown(int(sys.Uid), int(sys.Gid))
+			}
+		}
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// userError marks errors caused by invalid input; the API returns them as 400.
+type userError struct{ msg string }
+
+func (e *userError) Error() string { return e.msg }
+
+func badRequest(format string, a ...any) error { return &userError{fmt.Sprintf(format, a...)} }
