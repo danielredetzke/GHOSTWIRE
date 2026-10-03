@@ -401,11 +401,9 @@
         pw.select();
       }
     } },
-    h('div', null, h('h1', null, 'Sign in'), h('p', { class: 'sub' }, location.host)),
     h('div', { class: 'field' }, h('label', { htmlFor: 'u' }, 'Username'), user),
     h('div', { class: 'field' }, h('label', { htmlFor: 'p' }, 'Password'), pw),
-    err, btn,
-    h('p', { class: 'hint' }, 'After 5 failed attempts, sign-in is locked for 15 minutes.'));
+    err, btn);
     app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
       brand(44),
       form)));
