@@ -1,21 +1,52 @@
 # GHOSTWIRE
 
-A small WireGuard server manager: one Go binary with a web interface and a JSON
-API (also meant for a future iOS app). It configures the WireGuard server,
-manages peers (add, change, disable, remove) and records traffic per peer.
+**ゴーストワイヤー** · A self-hosted WireGuard server manager in a single Go
+binary, with a web interface, a JSON API and a native iPhone app.
 
-- **State:** everything lives in `config.json`. The kernel is reconciled to it,
-  so there is no `/etc/wireguard`, no `wg-quick` and no `wireguard-tools`.
+GHOSTWIRE sets up the WireGuard server, manages peers (add, change, disable,
+remove), hands out client configs as a download or QR code, and records traffic
+and connection history per peer. There are no install scripts and no
+dependencies on the server: the binary installs, updates and removes itself.
+
+## Features
+
+- **One file of state:** everything lives in `config.json`. The kernel is
+  reconciled to it, so there is no `/etc/wireguard`, no `wg-quick` and no
+  `wireguard-tools`.
 - **Kernel access:** netlink creates `wg0` and sets its addresses and MTU;
   wgctrl sets keys and peers; nftables holds the rules in its own
   `inet GHOSTWIRE` table.
 - **Live peer changes:** only peers that changed are touched, the same effect
   as `wg syncconf`, so connected peers stay connected.
-- **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files kept by default (Settings → Data retention).
-- **Traffic history:** kept in `stats.json`: hourly for 48 h and daily for 400 days by default (Settings → Data retention).
-- **Connection history:** every online session per peer, with start, duration, address and traffic. A new session starts when a device changes networks. Country and network operator come from the free [DB-IP Lite](https://db-ip.com) databases (CC BY 4.0). GHOSTWIRE downloads them monthly (about 20 MB) and looks addresses up locally, so peer addresses never leave the server. You can switch this off under Settings → Data retention.
+- **IPv4 and IPv6:** IPv6 inside the tunnel is turned on automatically when the
+  server has a global IPv6 address.
+- **Traffic history:** kept in `stats.json`, hourly for 48 h and daily for
+  400 days by default (Settings → Data retention).
+- **Connection history:** every online session per peer, with start, duration,
+  address and traffic. A new session starts when a device changes networks.
+  Country and network operator come from the free
+  [DB-IP Lite](https://db-ip.com) databases (CC BY 4.0). GHOSTWIRE downloads
+  them monthly (about 20 MB) and looks addresses up locally, so peer addresses
+  never leave the server. You can switch this off under Settings → Data
+  retention.
+- **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files
+  kept by default. Changes are marked as audit entries.
+- **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
+  certificate files, or plain HTTP behind a reverse proxy.
+
+## Security
+
 - **Client private keys are never stored.** A config is shown once, as a
   download or QR code. "Issue new config" makes new keys.
+- **The service is not root.** It runs as user `ghostwire` with only
+  `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, and can write only to
+  `/opt/ghostwire`.
+- **Sign-in:** one admin account. The password is stored as an argon2id hash.
+  After 5 failed attempts, sign-in is locked for 15 minutes. Sessions use an
+  HttpOnly, SameSite=Strict cookie and last 12 hours by default.
+- **API tokens** are stored only as hashes and can be read-only or full access.
+- `config.json` holds the server private key and is readable only by the
+  service (0600).
 
 ## Requirements
 
@@ -24,6 +55,9 @@ manages peers (add, change, disable, remove) and records traffic per peer.
   http-01 and redirect)
 
 ## Build
+
+Building needs Go 1.27 or newer. The binaries are static (no cgo), so they run
+on any Linux distribution.
 
 ```sh
 make linux-amd64      # dist/amd64/GHOSTWIRE
@@ -59,9 +93,8 @@ later in the web interface or with `-endpoint`.
 
 Running it again is safe: steps that are already done are skipped.
 
-The service runs as user `ghostwire` with only `CAP_NET_ADMIN` and
-`CAP_NET_BIND_SERVICE`, and can write only to `/opt/ghostwire`. Root is needed
-only for the commands below, never for the running service.
+Then open `https://vpn.example.net` and sign in as `admin`. Root is needed only
+for the commands below, never for the running service.
 
 ## Commands (as root)
 
@@ -168,3 +201,10 @@ password first:
 ```sh
 make build && mkdir -p dev && ./GHOSTWIRE -config dev/config.json -passwd
 ```
+
+## License
+
+GHOSTWIRE is released under the [MIT License](LICENSE).
+
+The DB-IP Lite databases it downloads are by [DB-IP](https://db-ip.com) and
+licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
