@@ -40,19 +40,6 @@ dependencies on the server: the binary installs, updates and removes itself.
 - **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
   certificate files, or plain HTTP behind a reverse proxy.
 
-## Screenshots
-
-| | |
-|---|---|
-| ![Peers list with status, endpoint, latency sparklines and 30-day traffic](screenshots/peers.png) | ![Peer page with traffic and latency charts, connection details and history](screenshots/peer.png) |
-| **Peers:** status, endpoint, latency and traffic at a glance | **Peer:** traffic, latency, connection history and settings |
-| ![Server page with health checks, interface, endpoint, client defaults and firewall](screenshots/server.png) | ![Settings with users, web interface and API tokens](screenshots/settings.png) |
-| **Server:** health, address plan, client defaults and firewall | **Settings:** users, web interface and API tokens |
-| ![My account page with profile, password and own app tokens](screenshots/account.png) | ![Sign-in page](screenshots/login.png) |
-| **My account:** profile, password and your app tokens | **Sign-in** |
-
-The screenshots show sample data from the built-in simulator.
-
 ## Security
 
 - **Client private keys are never stored.** A config is shown once, as a
