@@ -66,6 +66,9 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .side .avatar { width: 28px; height: 28px; border-radius: 50%; background: #3a3b41; display: grid; place-items: center; flex: none; font-size: 13px; font-weight: 600; color: #fff; }
 .side .footrow { display: flex; justify-content: space-between; padding: 10px 12px 0; }
 .main { flex: 999 1 560px; min-width: 0; padding: 32px 32px 56px; }
+/* Beside the page (not stacked above it on a phone), the sidebar stays in
+   place while the page scrolls, so the account link is always visible. */
+@media (min-width: 800px) { .side { position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto; } }
 .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
 @media (max-width: 640px) { .main { padding: 20px 16px 40px; } }
 

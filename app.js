@@ -518,7 +518,7 @@
           h('span', null, h('strong', null, me.name), h('span', null, 'My account')))),
         h('div', { class: 'footrow' },
           h('button', { type: 'button', onClick: logout }, 'Sign out'),
-          h('span', null, 'v' + me.version))));
+          h('span', null, 'v' + me.version.replace(/^v/, '')))));
     main = h('main', { class: 'main', id: 'main' });
     app.replaceChildren(h('div', { class: 'shell' }, nav, main));
     refreshSide();
