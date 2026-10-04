@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +16,39 @@ import (
 //go:embed index.html setup.html app.js setup.js app.css favicon.svg apple-touch-icon.png ShipporiMinchoB1-ExtraBold.woff2
 var webFiles embed.FS
 
+// The pages load app.js, setup.js and app.css with ?v=<hash of the file>, so
+// a new binary makes browsers fetch the new files, and a fingerprinted file
+// can be cached for good.
+var (
+	assetHash = map[string]string{}
+	indexPage []byte
+)
+
+func init() {
+	for _, name := range []string{"app.js", "setup.js", "app.css"} {
+		b, err := webFiles.ReadFile(name)
+		if err != nil {
+			panic(err)
+		}
+		sum := sha256.Sum256(b)
+		assetHash[name] = hex.EncodeToString(sum[:5])
+	}
+	b, err := webFiles.ReadFile("index.html")
+	if err != nil {
+		panic(err)
+	}
+	indexPage = fingerprint(b, "/")
+}
+
+// fingerprint adds ?v=<hash> to the page's references to base + file.
+func fingerprint(page []byte, base string) []byte {
+	s := string(page)
+	for name, h := range assetHash {
+		s = strings.ReplaceAll(s, `"`+base+name+`"`, `"`+base+name+"?v="+h+`"`)
+	}
+	return []byte(s)
+}
+
 func (a *App) webHandler() http.Handler {
 	files := http.FileServerFS(webFiles)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +57,18 @@ func (a *App) webHandler() http.Handler {
 			return
 		}
 		switch r.URL.Path {
-		case "/", "/app.js", "/setup.js", "/app.css", "/favicon.svg", "/apple-touch-icon.png":
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(indexPage)
+		case "/app.js", "/setup.js", "/app.css":
+			if v := r.URL.Query().Get("v"); v != "" && v == assetHash[r.URL.Path[1:]] {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
+			files.ServeHTTP(w, r)
+		case "/favicon.svg", "/apple-touch-icon.png":
 			w.Header().Set("Cache-Control", "no-cache")
 			files.ServeHTTP(w, r)
 		case "/ShipporiMinchoB1-ExtraBold.woff2":
@@ -66,7 +112,7 @@ func (a *App) setupPage(w http.ResponseWriter, r *http.Request) {
 	page := strings.NewReplacer(`href="/`, `href="`+base, `src="/`, `src="`+base).Replace(string(b))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(page))
+	_, _ = w.Write(fingerprint([]byte(page), base))
 }
 
 func (a *App) setupAsset(w http.ResponseWriter, r *http.Request) {

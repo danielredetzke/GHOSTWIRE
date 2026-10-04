@@ -921,8 +921,15 @@ func TestDecoy(t *testing.T) {
 		}
 	}
 
-	if b, _ := get("/", 200); !strings.Contains(b, "/app.js") {
-		t.Fatal("web interface not served with the decoy off")
+	b, _ := get("/", 200)
+	if !strings.Contains(b, `"/app.js?v=`+assetHash["app.js"]+`"`) || !strings.Contains(b, `"/app.css?v=`+assetHash["app.css"]+`"`) {
+		t.Fatalf("web interface not served with fingerprinted files: %q", b)
+	}
+	if _, h := get("/app.js?v="+assetHash["app.js"], 200); !strings.Contains(h.Get("Cache-Control"), "immutable") {
+		t.Fatalf("fingerprinted app.js: %v", h)
+	}
+	if _, h := get("/app.js?v=old", 200); h.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("stale app.js cached: %v", h)
 	}
 	set(func(c *Config) {
 		v4 := netip.MustParsePrefix(c.Server.IPv4)
@@ -939,7 +946,7 @@ func TestDecoy(t *testing.T) {
 			t.Fatalf("%s leaks: %q", p, b)
 		}
 	}
-	if b, _ := get("/setup/live-token", 200); !strings.Contains(b, `src="/setup/live-token/setup.js"`) {
+	if b, _ := get("/setup/live-token", 200); !strings.Contains(b, `src="/setup/live-token/setup.js?v=`+assetHash["setup.js"]+`"`) {
 		t.Fatalf("setup page files not under the link: %q", b)
 	}
 	get("/setup/live-token/app.css", 200)
