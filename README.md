@@ -275,5 +275,9 @@ make build && mkdir -p dev && ./GHOSTWIRE -config dev/config.json -passwd
 
 GHOSTWIRE is released under the [MIT License](LICENSE).
 
+The wordmark typeface, Shippori Mincho B1 by the Shippori Mincho Project
+Authors, is bundled as a subset under the
+[SIL Open Font License 1.1](OFL-ShipporiMincho.txt).
+
 The DB-IP Lite databases it downloads are by [DB-IP](https://db-ip.com) and
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

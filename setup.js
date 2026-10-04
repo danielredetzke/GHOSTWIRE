@@ -24,9 +24,8 @@
     const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     for (const [k, v] of Object.entries({ width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': 'true' })) s.setAttribute(k, v);
     s.innerHTML = (plain ? '' : '<rect width="64" height="64" rx="14" fill="#1b1b1d"/><rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#fff" stroke-opacity="0.2"/>') +
-      '<circle cx="32" cy="32" r="22" fill="none" stroke="#fff" stroke-width="3.5"/><g transform="translate(32 33) scale(0.66) translate(-32 -33)">' +
-      '<path d="M18 50V30a14 14 0 0 1 28 0v20l-4.7-4-4.6 4-4.7-4-4.7 4-4.6-4z" fill="#fff"/>' +
-      (plain ? '' : '<circle cx="27" cy="30" r="3.2" fill="#c8372d"/><circle cx="37" cy="30" r="3.2" fill="#c8372d"/>') + '</g>';
+      '<g transform="translate(32 34) scale(0.9) translate(-32 -27)"><path d="M22 21C17 17 15 11 16 5c3 5 7 8 12 11zM42 21c5-4 7-10 6-16-3 5-7 8-12 11z" fill="#fff"/><path d="M18 46V29c0-9 6-14 14-14s14 5 14 14v17l-4.5-5-4.5 8-5-6-5 6-4.5-8z" fill="#fff"/>' +
+      (plain ? '' : '<path d="M20 27l10 4.5-1.5 2.5-6.5-1.5zM44 27l-10 4.5 1.5 2.5 6.5-1.5z" fill="#c8372d"/>') + '</g>';
     return s;
   }
 
