@@ -257,13 +257,26 @@
     else if (okMsg) toast(okMsg);
   }
 
+  // dialog shows a modal dialog. Extensions such as Bitwarden move elements
+  // around in <body>; a moved dialog stays open but drops out of the top
+  // layer to the bottom of the page, so it is shown as a modal again. That
+  // goes through close(), whose close event arrives after the dialog is open
+  // again and is kept from the listeners added by callers.
   function dialog(build) {
     const d = h('dialog');
     const close = () => d.close();
-    d.addEventListener('close', () => d.remove());
+    const moved = new MutationObserver(() => {
+      if (d.open && d.isConnected && !d.matches(':modal')) { d.close(); d.showModal(); }
+    });
+    d.addEventListener('close', (e) => {
+      if (d.open) { e.stopImmediatePropagation(); return; }
+      moved.disconnect();
+      d.remove();
+    });
     d.append(build(close));
     document.body.append(d);
     d.showModal();
+    moved.observe(document.body, { childList: true, subtree: true });
     return d;
   }
 
