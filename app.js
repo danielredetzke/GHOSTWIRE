@@ -618,8 +618,7 @@
     err, btn);
     app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
       brand(72),
-      form),
-      h('p', { class: 'loginfoot' }, 'WireGuard server manager')));
+      form)));
     user.focus();
   }
 
@@ -658,8 +657,7 @@
       h('div', { class: 'logintext' },
         h('h1', null, me ? 'Welcome, ' + me.name : 'Choose a new password'),
         h('p', null, 'An admin gave you a temporary password. Choose your own to continue.')),
-      form),
-      h('p', { class: 'loginfoot' }, 'WireGuard server manager')));
+      form)));
     (cur || p1).focus();
   }
 
