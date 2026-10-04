@@ -636,7 +636,7 @@
     // allows it.
     const passkeyRow = h('div', { class: 'loginalt', hidden: true },
       h('div', { class: 'or' }, 'or'),
-      h('button', { type: 'button', class: 'btn altbtn', onClick: async () => {
+      h('button', { type: 'button', class: 'btn altbtn signin', onClick: async () => {
         err.textContent = '';
         try {
           const b = await api('POST', '/auth/login/passkey/begin');
@@ -644,7 +644,7 @@
           await api('POST', '/auth/login/passkey/finish?id=' + encodeURIComponent(b.id), cred);
           await signedIn();
         } catch (x) { err.textContent = keyError(x); }
-      } }, icon('key', 18), 'Sign in with a passkey'));
+      } }, icon('key', 18), h('span', { class: 'en' }, 'Sign in with a passkey'), h('span', { class: 'ja', lang: 'ja', 'aria-hidden': 'true' }, 'パスキーでサインイン')));
     if (window.PublicKeyCredential) {
       api('GET', '/auth/options').then((o) => { passkeyRow.hidden = !o.passkeys; }).catch(() => {});
     }
