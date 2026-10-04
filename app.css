@@ -56,7 +56,12 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .side a.nav.on { background: #2a2b31; color: #fff; }
 .side .count { margin-left: auto; font-size: 12px; color: #8d8e93; }
 .side .foot { margin-top: auto; padding-top: 16px; border-top: 1px solid #2c2d32; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #8d8e93; }
-.side .foot button { background: none; border: 0; padding: 0; font: inherit; color: #c9c9c3; text-decoration: underline; cursor: pointer; }
+.side .acctrow { display: flex; align-items: center; gap: 4px; }
+.side .acctrow .acct { flex: 1; min-width: 0; }
+.side .signout { position: relative; flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 8px; background: none; color: #8d8e93; cursor: pointer; }
+.side .signout:hover { background: #222328; color: #fff; }
+.side .signout .tip { position: absolute; bottom: calc(100% + 6px); right: 0; padding: 3px 8px; border-radius: 5px; background: #000; color: #fff; font-size: 12px; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 0.12s; }
+.side .signout:hover .tip, .side .signout:focus-visible .tip { opacity: 1; }
 .side .acct { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; border-radius: 8px; color: #c9c9c3; text-decoration: none; }
 .side .acct:hover { background: #222328; color: #fff; }
 .side .acct.on { background: #2a2b31; color: #fff; }

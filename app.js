@@ -48,6 +48,7 @@
     server: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
     settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
   };
 
   // The Hannya mark: the horned demon mask of Noh. Same drawing as favicon.svg.
@@ -513,11 +514,12 @@
       srvBox,
       NAV.map(([href, ic, label]) => (navLinks[href] = h('a', { class: 'nav', href }, icon(ic), label, ic === 'peers' ? peerCount : null))),
       h('div', { class: 'foot' },
-        (navLinks['#/account'] = h('a', { class: 'acct', href: '#/account' },
-          h('span', { class: 'avatar', 'aria-hidden': 'true' }, me.name.slice(0, 1).toUpperCase()),
-          h('span', null, h('strong', null, me.name), h('span', null, 'My account')))),
+        h('div', { class: 'acctrow' },
+          (navLinks['#/account'] = h('a', { class: 'acct', href: '#/account' },
+            h('span', { class: 'avatar', 'aria-hidden': 'true' }, me.name.slice(0, 1).toUpperCase()),
+            h('span', null, h('strong', null, me.name), h('span', null, 'My account')))),
+          h('button', { type: 'button', class: 'signout', 'aria-label': 'Sign out', onClick: logout }, icon('logout'), h('span', { class: 'tip', 'aria-hidden': 'true' }, 'Sign out'))),
         h('div', { class: 'footrow' },
-          h('button', { type: 'button', onClick: logout }, 'Sign out'),
           h('span', null, 'v' + me.version.replace(/^v/, '')))));
     main = h('main', { class: 'main', id: 'main' });
     app.replaceChildren(h('div', { class: 'shell' }, nav, main));
