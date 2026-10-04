@@ -463,6 +463,41 @@
       h('div', { class: 'xaxis' }, h('span', null, '24 h ago'), h('span', null, '12 h ago'), h('span', null, 'now')));
   }
 
+  // pairDialog creates an API token and shows it once, with the pairing QR
+  // code for the iOS app; onCreated runs after the token is saved.
+  function pairDialog(onCreated) {
+    const nm = h('input', { id: 'tn', value: 'iPhone app' });
+    const sc = h('select', { id: 'ts' }, h('option', { value: 'rw' }, 'Full access'), h('option', { value: 'ro' }, 'Read only'));
+    const e = h('p', { class: 'err-text' });
+    const d = dialog((close) => {
+      const body = h('form', { class: 'dlg', onSubmit: async (ev) => {
+        ev.preventDefault();
+        try {
+          const r = await api('POST', '/tokens', { name: nm.value, scope: sc.value });
+          body.replaceChildren(
+            h('h2', null, 'Scan with the iOS app'),
+            h('div', { class: 'notice' }, 'The token is shown only now. Only a hash is stored on the server.'),
+            h('div', { class: 'qrrow' },
+              h('img', { class: 'qr', src: r.qr, alt: 'Pairing QR code' }),
+              h('div', { class: 'col' },
+                h('button', { type: 'button', class: 'btn', onClick: () => copy(r.pairing) }, 'Copy pairing code'),
+                h('button', { type: 'button', class: 'btn', onClick: () => copy(r.token) }, 'Copy token'))),
+            h('pre', { class: 'code' }, r.token),
+            h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done')));
+          onCreated();
+        } catch (x) { e.textContent = x.message; }
+      } },
+      h('h2', null, 'New API token'),
+      h('p', null, 'For the iOS app or scripts. The pairing QR code holds the server address, the token and the certificate fingerprint.'),
+      h('div', { class: 'field' }, h('label', { htmlFor: 'tn' }, 'Name'), nm),
+      h('div', { class: 'field' }, h('label', { htmlFor: 'ts' }, 'Access'), sc),
+      e,
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Create token')));
+      return body;
+    });
+    return d;
+}
+
   // ---------- shell, router ----------
 
   const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/settings', 'settings', 'Settings']];
@@ -478,9 +513,12 @@
       srvBox,
       NAV.map(([href, ic, label]) => (navLinks[href] = h('a', { class: 'nav', href }, icon(ic), label, ic === 'peers' ? peerCount : null))),
       h('div', { class: 'foot' },
-        'Signed in as ', me.name, ' · ',
-        h('button', { type: 'button', onClick: logout }, 'Sign out'),
-        h('br'), 'v' + me.version));
+        (navLinks['#/account'] = h('a', { class: 'acct', href: '#/account' },
+          h('span', { class: 'avatar', 'aria-hidden': 'true' }, me.name.slice(0, 1).toUpperCase()),
+          h('span', null, h('strong', null, me.name), h('span', null, 'My account')))),
+        h('div', { class: 'footrow' },
+          h('button', { type: 'button', onClick: logout }, 'Sign out'),
+          h('span', null, 'v' + me.version))));
     main = h('main', { class: 'main', id: 'main' });
     app.replaceChildren(h('div', { class: 'shell' }, nav, main));
     refreshSide();
@@ -516,6 +554,7 @@
     [/^#\/peers\/([\w-]+)$/, '#/peers', viewPeer],
     [/^#\/server$/, '#/server', viewServer],
     [/^#\/settings$/, '#/settings', viewSettings],
+    [/^#\/account$/, '#/account', viewAccount],
   ];
 
   async function render() {
@@ -1228,6 +1267,103 @@
 
   // ---------- settings ----------
 
+  // ---------- my account ----------
+
+  async function viewAccount(wrap) {
+    if (!me.isAdmin) {
+      fill(wrap, h('h1', null, 'My account'), h('div', { class: 'notice' }, 'API tokens have no account page. Sign in to the web interface.'));
+      return;
+    }
+    const [m, tk] = await Promise.all([api('GET', '/auth/me'), api('GET', '/tokens')]);
+
+    // profile
+    const uname = h('input', { id: 'un', value: m.username, autocomplete: 'username', autocapitalize: 'none', required: true });
+    const note = h('input', { id: 'nt', value: m.note || '', autocomplete: 'off' });
+    const profErr = h('p', { class: 'err-text', role: 'alert' });
+    const saveProfile = async (e) => {
+      e.preventDefault();
+      profErr.textContent = '';
+      const body = {};
+      if (uname.value.trim() !== m.username) body.username = uname.value.trim();
+      if (note.value.trim() !== (m.note || '')) body.note = note.value.trim();
+      if (!Object.keys(body).length) { toast('Nothing changed'); return; }
+      try {
+        await api('PATCH', '/users/' + m.id, body);
+        toast('Profile saved');
+        me = await api('GET', '/auth/me');
+        main = null; // the sidebar shows the name
+        render();
+      } catch (x) { profErr.textContent = x.message; }
+    };
+
+    // password
+    const cur = h('input', { id: 'pc', type: 'password', autocomplete: 'current-password', required: true });
+    const p1 = h('input', { id: 'p1', type: 'password', autocomplete: 'new-password', placeholder: 'At least 12 characters', required: true });
+    const p2 = h('input', { id: 'p2', type: 'password', autocomplete: 'new-password', required: true });
+    const pwErr = h('p', { class: 'err-text', role: 'alert' });
+    const savePw = async (e) => {
+      e.preventDefault();
+      pwErr.textContent = '';
+      if (p1.value !== p2.value) { pwErr.textContent = 'The new passwords do not match'; return; }
+      try {
+        await api('POST', '/auth/password', { current: cur.value, new: p1.value });
+        toast('Password changed. Other browsers are signed out.');
+        cur.value = p1.value = p2.value = '';
+      } catch (x) { pwErr.textContent = x.message; }
+    };
+
+    // my tokens
+    const tbody = h('tbody');
+    const drawTokens = (tokens) => {
+      const mine = tokens.filter((t) => t.ownerId === m.id);
+      tbody.replaceChildren(...(mine.length ? mine.map((t) => h('tr', null,
+        h('td', null, t.name),
+        h('td', null, h('span', { class: 'badge' }, t.scope === 'ro' ? 'Read only' : 'Full access')),
+        h('td', null, fmtDate(t.created)),
+        h('td', null, t.lastUsed ? ago(t.lastUsed.at) + ' · ' + t.lastUsed.ip : 'Not since restart'),
+        h('td', { class: 'num' }, h('button', { type: 'button', class: 'btn danger small', onClick: () => revoke(t) }, 'Revoke'))))
+        : [h('tr', null, h('td', { colspan: '5', class: 'muted' }, 'You have no app tokens.'))]));
+    };
+    drawTokens(tk.tokens);
+    const reloadTokens = async () => drawTokens((await api('GET', '/tokens')).tokens);
+    const revoke = async (t) => {
+      if (!await confirmDialog({ title: 'Revoke ' + t.name + '?', text: 'Apps using this token are signed out immediately.', ok: 'Revoke', danger: true })) return;
+      try { await api('DELETE', '/tokens/' + t.id); toast('Revoked ' + t.name); reloadTokens(); } catch (e) { toast(e.message, true); }
+    };
+
+    const since = m.session ? 'since ' + fmtStamp(m.session.started) + ' from ' + m.session.ip : '';
+    fill(wrap,
+      h('div', null, h('h1', null, 'My account'),
+        h('p', { class: 'sub' }, ['Signed in as ' + m.username, since, m.created ? 'account created ' + fmtDate(m.created) : ''].filter(Boolean).join(' · '))),
+
+      h('form', { class: 'card', onSubmit: saveProfile, 'aria-labelledby': 'prof' },
+        h('h2', { id: 'prof' }, 'Profile'),
+        h('p', { class: 'lead' }, 'Your username is what you sign in with. Other admins see the note in the Users list.'),
+        h('div', { class: 'grid' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'un' }, 'Username'), uname, h('span', { class: 'hint' }, 'Letters, numbers, . @ _ - · max 32')),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'nt' }, 'Note'), note)),
+        profErr,
+        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save profile'))),
+
+      h('form', { class: 'card', onSubmit: savePw, 'aria-labelledby': 'pw' },
+        h('h2', { id: 'pw' }, 'Password'),
+        h('p', { class: 'lead' }, 'Changing it signs you out in other browsers. Your app tokens keep working.'),
+        h('div', { class: 'grid' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'pc' }, 'Current password'), cur),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'p1' }, 'New password'), p1),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'p2' }, 'Repeat new password'), p2)),
+        pwErr,
+        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Change password'))),
+
+      h('section', { class: 'card flush', 'aria-labelledby': 'mytk' },
+        h('div', { class: 'cardhead' },
+          h('div', null, h('h2', { id: 'mytk' }, 'My app tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Tokens you created for the iOS app and scripts. All tokens are listed under Settings → API tokens.')),
+          h('button', { type: 'button', class: 'btn primary', onClick: () => pairDialog(reloadTokens) }, 'Pair iOS app')),
+        h('div', { class: 'tbl' }, h('table', { class: 'narrow' },
+          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          tbody))));
+  }
+
   async function viewSettings(wrap) {
     if (!me.isAdmin) {
       fill(wrap, h('h1', null, 'Settings'), h('div', { class: 'notice' }, 'API tokens cannot change settings. Sign in to the web interface.'));
@@ -1235,31 +1371,6 @@
     }
     const [s, tk, us] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens'), api('GET', '/users')]);
     let logLevelFilter = 'all';
-
-    // my account
-    const uname = h('input', { id: 'u', value: me.name, autocomplete: 'username', autocapitalize: 'none' });
-    const cur = h('input', { id: 'pc', type: 'password', autocomplete: 'current-password' });
-    const p1 = h('input', { id: 'p1', type: 'password', autocomplete: 'new-password', placeholder: 'At least 12 characters' });
-    const p2 = h('input', { id: 'p2', type: 'password', autocomplete: 'new-password' });
-    const accErr = h('p', { class: 'err-text', role: 'alert' });
-    const savePw = async (e) => {
-      e.preventDefault();
-      accErr.textContent = '';
-      try {
-        if (p1.value || p2.value || cur.value) {
-          if (p1.value !== p2.value) throw new Error('The new passwords do not match');
-          await api('POST', '/auth/password', { current: cur.value, new: p1.value });
-          toast('Password changed. Other browsers are signed out.');
-        }
-        if (uname.value.trim() !== me.name) {
-          await api('PATCH', '/users/' + me.id, { username: uname.value.trim() });
-          toast('Username saved');
-        }
-        me = await api('GET', '/auth/me');
-        main = null;
-        render();
-      } catch (x) { accErr.textContent = x.message; }
-    };
 
     // users
     const userBody = h('tbody');
@@ -1269,7 +1380,9 @@
       h('td', null, u.lastLogin ? ago(u.lastLogin.at) + ' · ' + u.lastLogin.ip : h('span', { class: 'muted' }, 'Not since restart')),
       h('td', null, u.tokens ? String(u.tokens) : h('span', { class: 'muted' }, 'None')),
       h('td', null, fmtDate(u.created)),
-      h('td', { class: 'num' }, h('button', { type: 'button', class: 'btn small', onClick: () => editUser(u) }, 'Edit')))));
+      h('td', { class: 'num' }, u.you
+        ? h('a', { class: 'btn small', href: '#/account' }, 'My account')
+        : h('button', { type: 'button', class: 'btn small', onClick: () => editUser(u) }, 'Edit')))));
     drawUsers(us.users);
     const reloadUsers = async () => drawUsers((await api('GET', '/users')).users);
     const pwField = (id, label) => {
@@ -1324,21 +1437,20 @@
           const body = {};
           if (nm.value.trim() !== u.username) body.username = nm.value.trim();
           if (note.value.trim() !== u.note) body.note = note.value.trim();
-          if (!u.you && must.box.checked !== u.mustChangePassword) body.mustChangePassword = must.box.checked;
+          if (must.box.checked !== u.mustChangePassword) body.mustChangePassword = must.box.checked;
           if (Object.keys(body).length) await api('PATCH', '/users/' + u.id, body);
           close();
-          if (u.you) { me = await api('GET', '/auth/me'); main = null; render(); } else reloadUsers();
+          reloadUsers();
         } catch (x) { e.textContent = x.message; }
       } },
       h('h2', null, 'Edit ' + u.username),
       h('div', { class: 'grid' },
         h('div', { class: 'field' }, h('label', { htmlFor: 'eu' }, 'Username'), nm),
         h('div', { class: 'field' }, h('label', { htmlFor: 'en' }, 'Note'), note)),
-      u.you ? h('p', { class: 'hint' }, 'Change your own password under My account.') : [
-        must.el,
-        h('div', { class: 'actions' },
-          h('button', { type: 'button', class: 'btn', onClick: () => { close(); resetUser(u); } }, 'Reset password…'),
-          h('button', { type: 'button', class: 'btn danger', onClick: () => { close(); deleteUser(u); } }, 'Delete user…'))],
+      must.el,
+      h('div', { class: 'actions' },
+        h('button', { type: 'button', class: 'btn', onClick: () => { close(); resetUser(u); } }, 'Reset password…'),
+        h('button', { type: 'button', class: 'btn danger', onClick: () => { close(); deleteUser(u); } }, 'Delete user…')),
       e,
       h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
     };
@@ -1416,38 +1528,6 @@
       if (!await confirmDialog({ title: 'Revoke ' + t.name + '?', text: 'Apps using this token are signed out immediately.', ok: 'Revoke', danger: true })) return;
       try { await api('DELETE', '/tokens/' + t.id); toast('Revoked ' + t.name); reloadTokens(); } catch (e) { toast(e.message, true); }
     };
-    const newToken = () => {
-      const nm = h('input', { id: 'tn', value: 'iPhone app' });
-      const sc = h('select', { id: 'ts' }, h('option', { value: 'rw' }, 'Full access'), h('option', { value: 'ro' }, 'Read only'));
-      const e = h('p', { class: 'err-text' });
-      const d = dialog((close) => {
-        const body = h('form', { class: 'dlg', onSubmit: async (ev) => {
-          ev.preventDefault();
-          try {
-            const r = await api('POST', '/tokens', { name: nm.value, scope: sc.value });
-            body.replaceChildren(
-              h('h2', null, 'Scan with the iOS app'),
-              h('div', { class: 'notice' }, 'The token is shown only now. Only a hash is stored on the server.'),
-              h('div', { class: 'qrrow' },
-                h('img', { class: 'qr', src: r.qr, alt: 'Pairing QR code' }),
-                h('div', { class: 'col' },
-                  h('button', { type: 'button', class: 'btn', onClick: () => copy(r.pairing) }, 'Copy pairing code'),
-                  h('button', { type: 'button', class: 'btn', onClick: () => copy(r.token) }, 'Copy token'))),
-              h('pre', { class: 'code' }, r.token),
-              h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done')));
-            reloadTokens();
-          } catch (x) { e.textContent = x.message; }
-        } },
-        h('h2', null, 'New API token'),
-        h('p', null, 'For the iOS app or scripts. The pairing QR code holds the server address, the token and the certificate fingerprint.'),
-        h('div', { class: 'field' }, h('label', { htmlFor: 'tn' }, 'Name'), nm),
-        h('div', { class: 'field' }, h('label', { htmlFor: 'ts' }, 'Access'), sc),
-        e,
-        h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Create token')));
-        return body;
-      });
-      return d;
-    };
 
     // logs
     const logBox = h('pre', { class: 'log', tabindex: '0', 'aria-label': 'Log lines, newest first' });
@@ -1519,17 +1599,6 @@
       h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Users, web interface, API access for the iOS app, logs, data retention and backups')),
       restartBox,
 
-      h('form', { class: 'card', onSubmit: savePw, 'aria-labelledby': 'acc' },
-        h('h2', { id: 'acc' }, 'My account'),
-        h('p', { class: 'lead' }, 'Changing your password signs you out in other browsers. Your app tokens keep working.'),
-        h('div', { class: 'grid' },
-          h('div', { class: 'field' }, h('label', { htmlFor: 'u' }, 'Username'), uname),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'pc' }, 'Current password'), cur),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'p1' }, 'New password'), p1),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'p2' }, 'Confirm new password'), p2)),
-        accErr,
-        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn' }, 'Save account'))),
-
       h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
         h('div', { class: 'cardhead' },
           h('div', null, h('h2', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
@@ -1555,7 +1624,7 @@
       h('section', { class: 'card', 'aria-labelledby': 'api' },
         h('div', { class: 'cardhead' },
           h('div', null, h('h2', { id: 'api' }, 'API tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'For the iOS app and scripts. A token appears once when you create it, and only a hash is stored.')),
-          h('button', { type: 'button', class: 'btn primary', onClick: newToken }, 'Pair iOS app')),
+          h('button', { type: 'button', class: 'btn primary', onClick: () => pairDialog(reloadTokens) }, 'Pair iOS app')),
         h('div', { class: 'tbl section' }, h('table', { class: 'narrow' },
           h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Owner'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
           tbody))),

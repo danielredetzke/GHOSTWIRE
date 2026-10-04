@@ -821,6 +821,9 @@ func TestUsers(t *testing.T) {
 	admin("POST", "/auth/login", map[string]string{"username": "ADMIN", "password": "a long test password"}, 200) // any letter case
 	me := admin("GET", "/auth/me", nil, 200)
 	myID := me["id"].(string)
+	if sess, _ := me["session"].(map[string]any); sess == nil || sess["ip"] != "127.0.0.1" || me["username"] != "admin" || me["created"] == nil {
+		t.Fatalf("me lacks the session or profile: %v", me)
+	}
 
 	// A new user with a temporary password can only change it.
 	eve := admin("POST", "/users", map[string]any{"username": "eve", "password": "temporary password 1"}, 201)["user"].(map[string]any)
@@ -840,6 +843,9 @@ func TestUsers(t *testing.T) {
 	e("POST", "/auth/password", map[string]string{"current": "temporary password 1", "new": "temporary password 1"}, 400)
 	e("POST", "/auth/password", map[string]string{"current": "temporary password 1", "new": "eve's own password"}, 200)
 	e("GET", "/peers", nil, 200) // the session continues after the change
+	if sess, _ := e("GET", "/auth/me", nil, 200)["session"].(map[string]any); sess == nil || sess["started"] == nil {
+		t.Fatal("session start lost after the password change")
+	}
 
 	// A user created without the flag can work at once.
 	sam := admin("POST", "/users", map[string]any{"username": "sam", "password": "sam's password 123", "mustChangePassword": false}, 201)["user"].(map[string]any)

@@ -102,6 +102,13 @@ type principal struct {
 	RemoteIP string
 	// MustChangePassword blocks everything but changing the password.
 	MustChangePassword bool
+	Session            *sessionInfo // nil for API tokens
+}
+
+// sessionInfo is when and from where a browser session started.
+type sessionInfo struct {
+	Started time.Time `json:"started"`
+	IP      string    `json:"ip"`
 }
 
 type session struct {
@@ -110,6 +117,7 @@ type session struct {
 	// password ends every session started with the old one.
 	stamp   string
 	expires time.Time
+	info    sessionInfo
 }
 
 type tokenUse struct {
@@ -185,20 +193,21 @@ func (a *Auth) Login(user, pw, ip string) (string, error) {
 	}
 	delete(a.fails, ip)
 	a.logins[u.ID] = tokenUse{At: time.Now(), IP: ip}
-	return a.newSessionLocked(cfg, u), nil
+	return a.newSessionLocked(cfg, u, sessionInfo{Started: time.Now(), IP: ip}), nil
 }
 
-// NewSession signs a user in again, e.g. after they changed their password.
-func (a *Auth) NewSession(u *User) string {
+// NewSession replaces a session after the user changed their password; it
+// keeps when and from where the old one started.
+func (a *Auth) NewSession(u *User, info sessionInfo) string {
 	cfg := a.store.Get()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.newSessionLocked(cfg, u)
+	return a.newSessionLocked(cfg, u, info)
 }
 
-func (a *Auth) newSessionLocked(cfg *Config, u *User) string {
+func (a *Auth) newSessionLocked(cfg *Config, u *User, info sessionInfo) string {
 	id := randomString(32)
-	a.sessions[id] = &session{userID: u.ID, stamp: u.PasswordHash, expires: time.Now().Add(time.Duration(cfg.Web.SessionHours) * time.Hour)}
+	a.sessions[id] = &session{userID: u.ID, stamp: u.PasswordHash, expires: time.Now().Add(time.Duration(cfg.Web.SessionHours) * time.Hour), info: info}
 	return id
 }
 
@@ -280,7 +289,8 @@ func (a *Auth) Authenticate(r *http.Request) (*principal, bool) {
 		delete(a.sessions, c.Value)
 		return nil, false
 	}
-	return &principal{Name: u.Username, UserID: u.ID, Scope: "rw", IsAdmin: true, RemoteIP: ip, MustChangePassword: u.MustChangePassword}, true
+	info := s.info
+	return &principal{Name: u.Username, UserID: u.ID, Scope: "rw", IsAdmin: true, RemoteIP: ip, MustChangePassword: u.MustChangePassword, Session: &info}, true
 }
 
 func (a *Auth) TokenUse(id string) *tokenUse {

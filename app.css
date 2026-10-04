@@ -55,8 +55,16 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .side a.nav:hover { background: #222328; color: #fff; }
 .side a.nav.on { background: #2a2b31; color: #fff; }
 .side .count { margin-left: auto; font-size: 12px; color: #8d8e93; }
-.side .foot { margin-top: auto; padding: 16px 12px 0; font-size: 12px; color: #8d8e93; }
+.side .foot { margin-top: auto; padding-top: 16px; border-top: 1px solid #2c2d32; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #8d8e93; }
 .side .foot button { background: none; border: 0; padding: 0; font: inherit; color: #c9c9c3; text-decoration: underline; cursor: pointer; }
+.side .acct { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 12px; border-radius: 8px; color: #c9c9c3; text-decoration: none; }
+.side .acct:hover { background: #222328; color: #fff; }
+.side .acct.on { background: #2a2b31; color: #fff; }
+.side .acct > span:last-child { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.side .acct strong { font-size: 14px; font-weight: 500; color: #fff; overflow: hidden; text-overflow: ellipsis; }
+.side .acct span span { color: #a9aaa5; }
+.side .avatar { width: 28px; height: 28px; border-radius: 50%; background: #3a3b41; display: grid; place-items: center; flex: none; font-size: 13px; font-weight: 600; color: #fff; }
+.side .footrow { display: flex; justify-content: space-between; padding: 10px 12px 0; }
 .main { flex: 999 1 560px; min-width: 0; padding: 32px 32px 56px; }
 .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
 @media (max-width: 640px) { .main { padding: 20px 16px 40px; } }

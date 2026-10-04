@@ -221,10 +221,14 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	p := who(r)
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
-		"mustChangePassword": p.MustChangePassword, "version": version,
-	})
+		"mustChangePassword": p.MustChangePassword, "version": version, "session": p.Session,
+	}
+	if _, u := a.store.Get().userByID(p.UserID); u != nil {
+		out["username"], out["note"], out["created"] = u.Username, u.Note, u.Created
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // changePassword changes the signed-in user's own password. Their other
@@ -270,7 +274,11 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName()); err == nil {
 		a.auth.Logout(c.Value)
 	}
-	a.setSessionCookie(w, r, a.auth.NewSession(&updated))
+	info := sessionInfo{Started: time.Now(), IP: remoteIP(r)}
+	if s := who(r).Session; s != nil {
+		info = *s
+	}
+	a.setSessionCookie(w, r, a.auth.NewSession(&updated, info))
 	a.audit(r, "password changed")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1008,6 +1016,7 @@ type tokenView struct {
 	Name     string    `json:"name"`
 	Scope    string    `json:"scope"`
 	Owner    string    `json:"owner"` // username
+	OwnerID  string    `json:"ownerId"`
 	Created  time.Time `json:"created"`
 	LastUsed *tokenUse `json:"lastUsed"`
 }
@@ -1016,7 +1025,7 @@ func (a *App) listTokens(w http.ResponseWriter, r *http.Request) {
 	cfg := a.store.Get()
 	out := []tokenView{}
 	for _, t := range cfg.APITokens {
-		out = append(out, tokenView{t.ID, t.Name, t.Scope, a.username(cfg, t.UserID), t.Created, a.auth.TokenUse(t.ID)})
+		out = append(out, tokenView{t.ID, t.Name, t.Scope, a.username(cfg, t.UserID), t.UserID, t.Created, a.auth.TokenUse(t.ID)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 }
