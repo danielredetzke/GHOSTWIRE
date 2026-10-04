@@ -204,6 +204,9 @@ func (c *Config) applyDefaults() {
 		c.Users = []User{u}
 	}
 	c.Admin = nil
+	for i := range c.Users {
+		dropSecurityKeys(&c.Users[i])
+	}
 	for i := range c.APITokens {
 		if c.APITokens[i].UserID == "" {
 			c.APITokens[i].UserID = c.Users[0].ID // tokens from before users existed

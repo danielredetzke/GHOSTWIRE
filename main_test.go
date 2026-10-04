@@ -1121,3 +1121,30 @@ func TestMFA(t *testing.T) {
 		t.Fatal("reset left methods behind")
 	}
 }
+
+// TestDropSecurityKeys checks that security keys from v0.3.0 are deleted on
+// load, and recovery codes with them when nothing else is left.
+func TestDropSecurityKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := `{"users": [
+		{"id": "a", "username": "a", "passwordHash": "x", "mfa": {"keys": [{"id": "k", "name": "YubiKey", "passkey": false}], "recoveryCodes": ["h"]}},
+		{"id": "b", "username": "b", "passwordHash": "x", "mfa": {"keys": [{"id": "k1", "name": "YubiKey", "passkey": false}, {"id": "k2", "name": "Mac", "passkey": true}], "recoveryCodes": ["h"]}}
+	]}`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := store.Get()
+	if a := c.Users[0].MFA; len(a.Keys) != 0 || len(a.RecoveryCodes) != 0 {
+		t.Fatalf("user a kept %v", a)
+	}
+	if b := c.Users[1].MFA; len(b.Keys) != 1 || b.Keys[0].Name != "Mac" || len(b.RecoveryCodes) != 1 {
+		t.Fatalf("user b: %v", b)
+	}
+	if b, _ := os.ReadFile(path); strings.Contains(string(b), "YubiKey") {
+		t.Fatal("security key still in config.json")
+	}
+}

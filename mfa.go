@@ -42,15 +42,27 @@ type UserMFA struct {
 	Handle        []byte     `json:"handle,omitempty"`        // WebAuthn user handle
 }
 
-// MFAKey is a passkey. Keys added by v0.3.0 as plain security keys have
-// Passkey false; they still work as the second step.
+// MFAKey is a passkey.
 type MFAKey struct {
 	ID         string              `json:"id"`
 	Name       string              `json:"name"`
-	Passkey    bool                `json:"passkey"` // discoverable: signs in without a password
+	Passkey    bool                `json:"passkey"` // false only for security keys added by v0.3.0, which are deleted
 	Created    time.Time           `json:"created"`
 	LastUsed   *time.Time          `json:"lastUsed,omitempty"`
 	Credential webauthn.Credential `json:"credential"`
+}
+
+// dropSecurityKeys deletes the security keys v0.3.0 could add; only
+// passkeys are supported. A user left without a method loses their
+// recovery codes too.
+func dropSecurityKeys(u *User) {
+	if u.MFA == nil {
+		return
+	}
+	u.MFA.Keys = slices.DeleteFunc(u.MFA.Keys, func(k MFAKey) bool { return !k.Passkey })
+	if !u.hasMFA() {
+		u.MFA.RecoveryCodes = nil
+	}
 }
 
 func (u *User) hasMFA() bool {
@@ -205,7 +217,6 @@ type ticket struct {
 
 type ceremony struct {
 	userID  string // "" for a passkey sign-in
-	passkey bool
 	data    *webauthn.SessionData
 	expires time.Time
 }
@@ -563,7 +574,7 @@ func (a *App) loginPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 			u := &cfg.Users[i]
 			if u.MFA != nil && len(u.MFA.Handle) > 0 && bytes.Equal(u.MFA.Handle, handle) {
 				for _, k := range u.MFA.Keys {
-					if k.Passkey && bytes.Equal(k.Credential.ID, rawID) {
+					if bytes.Equal(k.Credential.ID, rawID) {
 						found = u
 						return waUser{u}, nil
 					}
@@ -589,7 +600,6 @@ func (a *App) loginPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 type keyView struct {
 	ID       string     `json:"id"`
 	Name     string     `json:"name"`
-	Passkey  bool       `json:"passkey"`
 	Created  time.Time  `json:"created"`
 	LastUsed *time.Time `json:"lastUsed"`
 }
@@ -606,7 +616,7 @@ func (a *App) mfaStatus(w http.ResponseWriter, r *http.Request) {
 	if m := u.MFA; m != nil {
 		keys := []keyView{}
 		for _, k := range m.Keys {
-			keys = append(keys, keyView{k.ID, k.Name, k.Passkey, k.Created, k.LastUsed})
+			keys = append(keys, keyView{k.ID, k.Name, k.Created, k.LastUsed})
 		}
 		out["totp"], out["totpAdded"], out["keys"], out["recoveryLeft"] = m.TOTPSecret != "", m.TOTPAdded, keys, len(m.RecoveryCodes)
 	}
@@ -752,7 +762,7 @@ func (a *App) keyBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.mu.Lock()
-	a.auth.mfa.enrolls[p.UserID] = &ceremony{userID: p.UserID, passkey: true, data: data, expires: time.Now().Add(ticketTTL)}
+	a.auth.mfa.enrolls[p.UserID] = &ceremony{userID: p.UserID, data: data, expires: time.Now().Add(ticketTTL)}
 	a.auth.mu.Unlock()
 	writeJSON(w, http.StatusOK, opts)
 }
@@ -792,7 +802,7 @@ func (a *App) keyFinish(w http.ResponseWriter, r *http.Request) {
 		name = name[:maxKeyName]
 	}
 	var codes []string
-	key := MFAKey{ID: newID(), Name: name, Passkey: cer.passkey, Created: time.Now().UTC(), Credential: *cred}
+	key := MFAKey{ID: newID(), Name: name, Passkey: true, Created: time.Now().UTC(), Credential: *cred}
 	if err := a.store.Update(func(c *Config) error {
 		_, u := c.userByID(p.UserID)
 		if u == nil || u.MFA == nil {
@@ -911,17 +921,9 @@ func (a *App) resetMFA(w http.ResponseWriter, r *http.Request) {
 
 // mfaSummary is what user lists show.
 func mfaSummary(u *User) map[string]any {
-	out := map[string]any{"totp": false, "keys": 0, "passkeys": 0}
+	out := map[string]any{"totp": false, "passkeys": 0}
 	if m := u.MFA; m != nil {
-		keys, passkeys := 0, 0
-		for _, k := range m.Keys {
-			if k.Passkey {
-				passkeys++
-			} else {
-				keys++
-			}
-		}
-		out["totp"], out["keys"], out["passkeys"] = m.TOTPSecret != "", keys, passkeys
+		out["totp"], out["passkeys"] = m.TOTPSecret != "", len(m.Keys)
 	}
 	return out
 }

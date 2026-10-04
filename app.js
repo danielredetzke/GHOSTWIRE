@@ -144,7 +144,6 @@
     if (!m) return '';
     const parts = [];
     if (m.totp) parts.push('App');
-    if (m.keys) parts.push(m.keys === 1 ? '1 key' : m.keys + ' keys');
     if (m.passkeys) parts.push(m.passkeys === 1 ? '1 passkey' : m.passkeys + ' passkeys');
     return parts.join(', ');
   }
@@ -907,7 +906,7 @@
       }
       for (const k of s.keys) {
         rows.push(h('div', { class: 'mfarow' }, h('div', { class: 'grow' }, h('strong', null, k.name),
-          h('div', { class: 'hint' }, (k.passkey ? 'Passkey' : 'Security key') + ' · added ' + fmtDate(k.created) + ' · ' + (k.lastUsed ? 'last used ' + ago(k.lastUsed) : 'not used yet'))),
+          h('div', { class: 'hint' }, 'Added ' + fmtDate(k.created) + ' · ' + (k.lastUsed ? 'last used ' + ago(k.lastUsed) : 'not used yet'))),
         h('button', { type: 'button', class: 'btn small', onClick: () => renameKey(k) }, 'Rename'),
         h('button', { type: 'button', class: 'btn danger small', onClick: () => removeKey(k) }, 'Remove')));
       }

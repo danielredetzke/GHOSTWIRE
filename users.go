@@ -21,7 +21,7 @@ type userView struct {
 	LastLogin          *tokenUse      `json:"lastLogin"` // since the service started
 	Tokens             int            `json:"tokens"`
 	You                bool           `json:"you"`
-	MFA                map[string]any `json:"mfa"` // {"totp": bool, "keys": n, "passkeys": n}
+	MFA                map[string]any `json:"mfa"` // {"totp": bool, "passkeys": n}
 }
 
 func (a *App) userView(c *Config, u *User, me string) userView {
