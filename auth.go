@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -26,12 +27,23 @@ const (
 	argonKeyLen  = 32
 )
 
+// Every argon2 run takes argonMemory (64 MiB). argonSlots caps how many run
+// at once, so a burst of sign-ins cannot run the server out of memory: two
+// slots are 128 MiB at most.
+var argonSlots = make(chan struct{}, 2)
+
+func argonKey(pw, salt []byte, t, m uint32, p uint8, n uint32) []byte {
+	argonSlots <- struct{}{}
+	defer func() { <-argonSlots }()
+	return argon2.IDKey(pw, salt, t, m, p, n)
+}
+
 func hashPassword(pw string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(pw), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := argonKey([]byte(pw), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, argonMemory, argonTime, argonThreads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
@@ -54,7 +66,7 @@ func verifyPassword(encoded, pw string) bool {
 	if err1 != nil || err2 != nil {
 		return false
 	}
-	got := argon2.IDKey([]byte(pw), salt, t, m, p, uint32(len(want)))
+	got := argonKey([]byte(pw), salt, t, m, p, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
@@ -139,14 +151,18 @@ type Auth struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	used     map[string]tokenUse
-	logins   map[string]tokenUse // last sign-in per user ID
-	fails    map[string]*failState
+	logins   map[string]tokenUse   // last sign-in per user ID
+	fails    map[string]*failState // by lockKey
+	waiting  int                   // sign-ins waiting for or running a password check
 	mfa      mfaState
 }
 
 const (
 	maxFailures = 5
 	lockoutTime = 15 * time.Minute
+	// maxWaiting sign-ins may wait for a password check; more are turned
+	// away until the queue is shorter.
+	maxWaiting = 16
 )
 
 func newAuth(s *Store) *Auth {
@@ -155,23 +171,51 @@ func newAuth(s *Store) *Auth {
 
 func cookieName() string { return appName + "_session" }
 
-var errLocked = errors.New("too many failed attempts, try again later")
+var (
+	errLocked = errors.New("too many failed attempts, try again later")
+	errBusy   = errors.New("too many sign-ins at once, try again in a moment")
+)
+
+// lockKey is what failed sign-ins are counted by: the IPv4 address, or the
+// /64 network of an IPv6 address, since one device can pick any address in
+// its /64.
+func lockKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || a.Unmap().Is4() {
+		return ip
+	}
+	p, _ := a.Prefix(64)
+	return p.String()
+}
 
 // Login checks the credentials and returns a new session id, or, for a user
 // with two-step sign-in, a ticket for the second step.
 func (a *Auth) Login(user, pw, ip string) (sessionID, ticket string, err error) {
-	a.mu.Lock()
-	f := a.fails[ip]
-	if f != nil && time.Now().Before(f.until) {
-		a.mu.Unlock()
-		return "", "", errLocked
-	}
-	a.mu.Unlock()
-
 	cfg := a.store.Get()
 	if !cfg.passwordSet() {
 		return "", "", errors.New("no password is set; run: " + appName + " passwd")
 	}
+	// The attempt counts as failed before the password is checked, so
+	// parallel attempts cannot get past the lockout; a right password takes
+	// it back.
+	a.mu.Lock()
+	if a.lockedLocked(ip) {
+		a.mu.Unlock()
+		return "", "", errLocked
+	}
+	if a.waiting >= maxWaiting {
+		a.mu.Unlock()
+		return "", "", errBusy
+	}
+	a.waiting++
+	undo := a.failLocked(ip)
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.waiting--
+		a.mu.Unlock()
+	}()
+
 	// An unknown username costs as much time as a wrong password, so the
 	// answer time does not tell which usernames exist.
 	u := cfg.userByName(strings.TrimSpace(user))
@@ -185,21 +229,13 @@ func (a *Auth) Login(user, pw, ip string) (sessionID, ticket string, err error) 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !okUser || !okPw {
-		if f == nil {
-			f = &failState{}
-			a.fails[ip] = f
-		}
-		f.count++
-		if f.count >= maxFailures {
-			f.count = 0
-			f.until = time.Now().Add(lockoutTime)
-		}
 		return "", "", errors.New("wrong username or password")
 	}
+	undo()
 	if u.hasMFA() {
 		return "", a.newTicketLocked(u, ip), nil
 	}
-	delete(a.fails, ip)
+	delete(a.fails, lockKey(ip))
 	a.logins[u.ID] = tokenUse{At: time.Now(), IP: ip}
 	return a.newSessionLocked(cfg, u, sessionInfo{Started: time.Now(), IP: ip}), "", nil
 }
@@ -321,9 +357,9 @@ func (a *Auth) sweep() {
 			delete(a.sessions, id)
 		}
 	}
-	for ip, f := range a.fails {
+	for key, f := range a.fails {
 		if now.After(f.until) && f.count == 0 {
-			delete(a.fails, ip)
+			delete(a.fails, key)
 		}
 	}
 	for id, t := range a.mfa.tickets {

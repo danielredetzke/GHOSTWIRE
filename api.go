@@ -232,7 +232,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("login failed", "user", in.Username, "remote", ip, "reason", err.Error())
 		code := http.StatusUnauthorized
-		if errors.Is(err, errLocked) {
+		if errors.Is(err, errLocked) || errors.Is(err, errBusy) {
 			code = http.StatusTooManyRequests
 		}
 		writeJSON(w, code, map[string]string{"error": err.Error()})

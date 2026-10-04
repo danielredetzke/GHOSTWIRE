@@ -236,23 +236,34 @@ func newMFAState() mfaState {
 
 var errBadTicket = errors.New("the sign-in expired; enter your password again")
 
-// failLocked counts a failed attempt from ip toward the lockout. a.mu must
-// be held.
-func (a *Auth) failLocked(ip string) {
-	f := a.fails[ip]
+// failLocked counts a failed attempt from ip toward the lockout and returns
+// a function that takes it back, for an attempt counted before it was
+// checked. a.mu must be held, also when calling undo.
+func (a *Auth) failLocked(ip string) (undo func()) {
+	key := lockKey(ip)
+	f := a.fails[key]
 	if f == nil {
 		f = &failState{}
-		a.fails[ip] = f
+		a.fails[key] = f
 	}
 	f.count++
-	if f.count >= maxFailures {
+	locked := f.count >= maxFailures
+	if locked {
 		f.count = 0
 		f.until = time.Now().Add(lockoutTime)
+	}
+	return func() {
+		switch {
+		case locked:
+			f.count, f.until = maxFailures-1, time.Time{}
+		case f.count > 0:
+			f.count--
+		}
 	}
 }
 
 func (a *Auth) lockedLocked(ip string) bool {
-	f := a.fails[ip]
+	f := a.fails[lockKey(ip)]
 	return f != nil && time.Now().Before(f.until)
 }
 
@@ -302,7 +313,7 @@ func (a *Auth) finishSignIn(u *User, ip string) string {
 	cfg := a.store.Get()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.fails, ip)
+	delete(a.fails, lockKey(ip))
 	a.logins[u.ID] = tokenUse{At: time.Now(), IP: ip}
 	return a.newSessionLocked(cfg, u, sessionInfo{Started: time.Now(), IP: ip})
 }

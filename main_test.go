@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -406,6 +407,60 @@ func TestSysctlConf(t *testing.T) {
 	}
 	if strings.Contains(c, "eth1") || strings.Contains(c, "veth1") {
 		t.Errorf("sysctl conf names eth1 (accept_ra 0) or veth1 (virtual):\n%s", c)
+	}
+}
+
+func TestLoginLockout(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error { c.Users[0].PasswordHash = hash; return nil })
+	a := newAuth(store)
+	const right, wrong = "a long test password", "a wrong password"
+
+	// Ten wrong attempts at once from one /64: five are checked, the others
+	// are locked out before any password check.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	got := map[string]int{}
+	for i := range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := a.Login("admin", wrong, fmt.Sprintf("2001:db8::%x", i+1))
+			mu.Lock()
+			got[err.Error()]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if got["wrong username or password"] != 5 || got[errLocked.Error()] != 5 {
+		t.Fatalf("parallel attempts: %v", got)
+	}
+	if _, _, err := a.Login("admin", right, "2001:db8::ffff"); !errors.Is(err, errLocked) {
+		t.Fatalf("same /64: %v, want locked", err)
+	}
+	if _, _, err := a.Login("admin", right, "2001:db8:0:1::1"); err != nil {
+		t.Fatalf("other /64: %v", err)
+	}
+
+	// A right password takes its own attempt back. With two-step sign-in
+	// the earlier failures stay, so wrong codes still lead to the lockout.
+	_ = store.Update(func(c *Config) error { c.Users[0].MFA = &UserMFA{TOTPSecret: newTOTPSecret()}; return nil })
+	ip := "192.0.2.7"
+	for range maxFailures - 1 {
+		_, _, _ = a.Login("admin", wrong, ip)
+	}
+	if _, tk, err := a.Login("admin", right, ip); err != nil || tk == "" {
+		t.Fatalf("5th attempt, right password: ticket %q, %v", tk, err)
+	}
+	if _, _, err := a.Login("admin", wrong, ip); err == nil || errors.Is(err, errLocked) {
+		t.Fatalf("6th attempt: %v, want wrong password", err)
+	}
+	if _, _, err := a.Login("admin", right, ip); !errors.Is(err, errLocked) {
+		t.Fatalf("7th attempt: %v, want locked", err)
 	}
 }
 
