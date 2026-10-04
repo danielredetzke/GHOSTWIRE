@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="favicon.svg" width="120" height="120" alt="GHOSTWIRE logo: the Hannya mask">
+</p>
+
 # GHOSTWIRE
 
 **ゴーストワイヤー** · A self-hosted WireGuard server manager in a single Go
