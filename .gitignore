@@ -1,7 +1,6 @@
 /GHOSTWIRE
 /dist/
 /dev/
-/ios/build/
 xcuserdata/
 *.xcuserstate
 .DS_Store

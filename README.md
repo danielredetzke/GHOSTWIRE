@@ -244,17 +244,12 @@ override a drop in another table, so if ufw or firewalld is active, allow UDP
 
 ## iOS app
 
-`ios/` holds the native iPhone app (SwiftUI, iOS 17+). It does everything the
-web interface does except password, API tokens and backups. Pair it in the web
-interface under Settings → Pair iOS app: scan the QR code, or tap "Copy pairing
-code" and paste it into the app's "Enter manually". Self-signed certificates are
-pinned during pairing.
-
-- Open `ios/GHOSTWIRE.xcodeproj` in Xcode to build and run.
-- `TEAM_ID=<your team> ios/release.sh` archives and uploads a build to App Store
-  Connect.
-- `ios/AppStore/` has the store listing text, privacy details, review notes and
-  6.9-inch screenshots.
+The native iPhone app (SwiftUI, iOS 17+) lives in its own project,
+GHOSTWIRE-Companion. It does everything the web interface does except
+password, API tokens and backups. Pair it in the web interface under
+Settings → Pair iOS app: scan the QR code, or tap "Copy pairing code" and paste
+it into the app's "Enter manually". Self-signed certificates are pinned during
+pairing.
 
 ## Development
 
