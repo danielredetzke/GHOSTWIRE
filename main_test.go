@@ -954,6 +954,21 @@ func TestDecoy(t *testing.T) {
 	if b, h := get("/", 200); !strings.Contains(b, "<p class=\"host\">127.0.0.1</p>") || h.Get("Server") != "" {
 		t.Fatalf("soon decoy: %q", b)
 	}
+	set(func(c *Config) { c.Decoy.Page = "blank" })
+	if b, _ := get("/", 200); b != "" {
+		t.Fatalf("blank decoy: %q", b)
+	}
+	if b, _ := get("/app.js", 404); b != "" {
+		t.Fatalf("blank 404: %q", b)
+	}
+	set(func(c *Config) { c.Decoy.Page = "forbidden" })
+	if b, _ := get("/", 403); !strings.Contains(b, "Forbidden") {
+		t.Fatalf("forbidden decoy: %q", b)
+	}
+	set(func(c *Config) { c.Decoy.Page = "private" })
+	if b, _ := get("/", 200); !strings.Contains(b, "Private server") {
+		t.Fatalf("private decoy: %q", b)
+	}
 	if err := store.Update(func(c *Config) error { c.Decoy.Page = "iis"; return nil }); err == nil {
 		t.Fatal("unknown decoy page accepted")
 	}

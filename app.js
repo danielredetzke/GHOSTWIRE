@@ -1547,7 +1547,7 @@
     } }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l, selected: s.log.level === l }, l)));
 
     // decoy
-    const decoyPages = [['nginx', 'nginx welcome page'], ['apache', 'Apache "It works!" page'], ['soon', '"Coming soon" page']];
+    const decoyPages = [['nginx', 'nginx welcome page'], ['apache', 'Apache "It works!" page'], ['soon', '"Coming soon" page'], ['blank', 'Blank page'], ['forbidden', '"Forbidden" page'], ['private', '"Private server" page']];
     const decoyBox = h('input', { type: 'checkbox', id: 'dc', checked: s.decoy.enabled, onChange: async (e) => {
       const on = e.target.checked;
       if (on) {

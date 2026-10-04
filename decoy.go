@@ -11,15 +11,20 @@ import (
 // front page is its stock welcome page and everything else is its stock
 // error page. Only /api/v1 and live setup links get past it.
 type decoyPage struct {
-	server string                                 // Server header, "" for none
-	index  func(host string) string               // the front page
-	error  func(code int, r *http.Request) string // body for 404 and 405
+	server    string                                 // Server header, "" for none
+	index     func(host string) string               // the front page
+	indexCode int                                    // status of the front page, 0 for 200
+	error     func(code int, r *http.Request) string // body for 404 and 405
 }
 
 var decoyPages = map[string]decoyPage{
 	"nginx":  {server: nginxServer, index: func(string) string { return nginxIndex }, error: nginxError},
 	"apache": {server: apacheServer, index: func(string) string { return apacheIndex }, error: apacheError},
 	"soon":   {index: soonIndex, error: soonError},
+	// Generic pages that name no server software.
+	"blank":     {index: func(string) string { return "" }, error: func(int, *http.Request) string { return "" }},
+	"forbidden": {index: func(string) string { return forbiddenIndex }, indexCode: http.StatusForbidden, error: soonError},
+	"private":   {index: func(string) string { return privateIndex }, error: soonError},
 }
 
 // serveDecoy writes the decoy's answer for r. It drops the headers the web
@@ -43,6 +48,9 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, name string) {
 		code, body = http.StatusMethodNotAllowed, d.error(http.StatusMethodNotAllowed, r)
 	case r.URL.Path == "/" || r.URL.Path == "/index.html":
 		body = d.index(hostOnly(r.Host))
+		if d.indexCode != 0 {
+			code = d.indexCode
+		}
 	default:
 		code, body = http.StatusNotFound, d.error(http.StatusNotFound, r)
 	}
@@ -535,5 +543,38 @@ const apacheIndex = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//
     <div class="validator">
     </div>
   </body>
+</html>
+`
+
+const forbiddenIndex = `<!DOCTYPE html>
+<html>
+<head><title>403 Forbidden</title></head>
+<body>
+<h1>Forbidden</h1>
+<p>You don't have permission to access this resource.</p>
+</body>
+</html>
+`
+
+const privateIndex = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Private</title>
+<style>
+html, body { height: 100%; margin: 0; }
+body { display: flex; align-items: center; justify-content: center; background: #111; color: #999;
+font-family: Georgia, serif; text-align: center; }
+h1 { font-size: 28px; font-weight: normal; letter-spacing: 0.04em; color: #fff; margin: 0 0 10px; }
+p { margin: 0; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Private server</h1>
+<p>Nothing to see here.</p>
+</main>
+</body>
 </html>
 `
