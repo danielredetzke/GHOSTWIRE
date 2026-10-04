@@ -1544,6 +1544,25 @@
       try { await api('PATCH', '/settings', { log: { ...s.log, level: e.target.value } }); s.log.level = e.target.value; toast('Log level: ' + e.target.value); } catch (x) { toast(x.message, true); }
     } }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l, selected: s.log.level === l }, l)));
 
+    // decoy
+    const decoyPages = [['nginx', 'nginx welcome page'], ['apache', 'Apache "It works!" page'], ['soon', '"Coming soon" page']];
+    const decoyBox = h('input', { type: 'checkbox', id: 'dc', checked: s.decoy.enabled, onChange: async (e) => {
+      const on = e.target.checked;
+      if (on) {
+        const hasApp = (tk.tokens || []).some((t) => t.scope === 'rw');
+        if (!await confirmDialog({ title: 'Turn on Decoy?', ok: 'Turn on', danger: true,
+          text: 'The web interface disappears right away and the server shows the decoy page instead. Only the iOS app can turn Decoy off again.' +
+            (hasApp ? '' : ' No iOS app with full access is paired yet, so you could not get the web interface back.') })) {
+          e.target.checked = false;
+          return;
+        }
+      }
+      try { await api('PATCH', '/settings', { decoy: { ...s.decoy, enabled: on } }); s.decoy.enabled = on; toast(on ? 'Decoy on. This tab keeps working until you close or reload it' : 'Decoy off'); } catch (x) { e.target.checked = !on; toast(x.message, true); }
+    } });
+    const decoySel = h('select', { id: 'dp', onChange: async (e) => {
+      try { await api('PATCH', '/settings', { decoy: { ...s.decoy, page: e.target.value } }); s.decoy.page = e.target.value; toast('Decoy page saved'); } catch (x) { e.target.value = s.decoy.page; toast(x.message, true); }
+    } }, decoyPages.map(([v, t]) => h('option', { value: v, selected: s.decoy.page === v }, t)));
+
     // data retention
     const presetSelect = (id, value, presets, unit) => {
       const opts = presets.some(([v]) => v === value) ? presets : [...presets, [value, value + ' ' + unit]].sort((a, b) => a[0] - b[0]);
@@ -1620,6 +1639,14 @@
         h('div', { class: 'section' }, fAcme, fFiles),
         webErr,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
+
+      h('section', { class: 'card', 'aria-labelledby': 'dcy' },
+        h('h2', { id: 'dcy' }, 'Decoy'),
+        h('p', { class: 'lead' }, 'Shows an ordinary web server page instead of this interface. The iOS app and setup links keep working. Changes apply immediately.'),
+        h('label', { class: 'check' }, decoyBox, h('span', null, 'Decoy', h('br'),
+          h('span', { class: 'hint' }, 'Hides the web interface. Turn it off again in the iOS app.'))),
+        h('div', { class: 'grid section' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'dp' }, 'Decoy page'), decoySel))),
 
       h('section', { class: 'card', 'aria-labelledby': 'api' },
         h('div', { class: 'cardhead' },

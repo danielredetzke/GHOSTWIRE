@@ -159,8 +159,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
 	})
-	mux.HandleFunc("GET /setup/{token}", setupPage)
-	mux.Handle("/", webHandler())
+	mux.HandleFunc("GET /setup/{token}", a.setupPage)
+	mux.HandleFunc("GET /setup/{token}/{file}", a.setupAsset)
+	mux.Handle("/", a.webHandler())
 
 	csrf := http.NewCrossOriginProtection()
 	return securityHeaders(csrf.Handler(mux))
@@ -963,6 +964,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"web":           cfg.Web,
 		"log":           cfg.Log,
 		"stats":         cfg.Stats,
+		"decoy":         cfg.Decoy,
 		"geo":           a.geoStatus(),
 		"adminUsername": a.username(cfg, who(r).UserID), // kept for older iOS app versions
 		"fingerprint":   a.tls.Fingerprint(),
@@ -989,6 +991,9 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		after, _ := json.Marshal(c.Web)
 		restart = string(before) != string(after)
 		if err := field(m, "stats", &c.Stats); err != nil {
+			return err
+		}
+		if err := field(m, "decoy", &c.Decoy); err != nil {
 			return err
 		}
 		return field(m, "log", &c.Log)

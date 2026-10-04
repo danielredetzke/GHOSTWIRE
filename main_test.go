@@ -877,3 +877,78 @@ func TestUsers(t *testing.T) {
 	}
 	admin("PATCH", "/settings", map[string]any{"adminUsername": "x"}, 400)
 }
+
+// TestDecoy checks that the decoy hides the web interface but leaves the API
+// and live setup links alone.
+func TestDecoy(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().Decoy.Page != "nginx" {
+		t.Fatalf("default decoy page %q", store.Get().Decoy.Page)
+	}
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+
+	get := func(path string, want int) (string, http.Header) {
+		t.Helper()
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s: status %d, want %d", path, resp.StatusCode, want)
+		}
+		return string(b), resp.Header
+	}
+	set := func(fn func(c *Config)) {
+		if err := store.Update(func(c *Config) error { fn(c); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if b, _ := get("/", 200); !strings.Contains(b, "/app.js") {
+		t.Fatal("web interface not served with the decoy off")
+	}
+	set(func(c *Config) {
+		v4 := netip.MustParsePrefix(c.Server.IPv4)
+		c.Peers = append(c.Peers, Peer{ID: "p1", Name: "phone", IPv4: v4.Addr().Next().Next().Next().String(), Setup: &SetupLink{Token: "live-token", Expires: time.Now().Add(time.Hour)}})
+		c.Decoy.Enabled = true
+	})
+
+	b, h := get("/", 200)
+	if !strings.Contains(b, "Welcome to nginx!") || h.Get("Server") != nginxServer || h.Get("Content-Security-Policy") != "" {
+		t.Fatalf("nginx decoy: %q %v", b, h)
+	}
+	for _, p := range []string{"/app.js", "/app.css", "/favicon.svg", "/ShipporiMinchoB1-ExtraBold.woff2", "/setup/wrong", "/setup/wrong/app.css", "/setup/live-token/app.js"} {
+		if b, _ := get(p, 404); strings.Contains(b, "GHOSTWIRE") || !strings.Contains(b, "404 Not Found") {
+			t.Fatalf("%s leaks: %q", p, b)
+		}
+	}
+	if b, _ := get("/setup/live-token", 200); !strings.Contains(b, `src="/setup/live-token/setup.js"`) {
+		t.Fatalf("setup page files not under the link: %q", b)
+	}
+	get("/setup/live-token/app.css", 200)
+	get("/api/v1/setup/live-token", 200)
+	get("/api/v1/status", 401)
+
+	set(func(c *Config) { c.Decoy.Page = "apache" })
+	if b, _ := get("/nope", 404); !strings.Contains(b, "Apache/2.4.58 (Ubuntu) Server at 127.0.0.1 Port") {
+		t.Fatalf("apache 404: %q", b)
+	}
+	set(func(c *Config) { c.Decoy.Page = "soon" })
+	if b, h := get("/", 200); !strings.Contains(b, "<p class=\"host\">127.0.0.1</p>") || h.Get("Server") != "" {
+		t.Fatalf("soon decoy: %q", b)
+	}
+	if err := store.Update(func(c *Config) error { c.Decoy.Page = "iis"; return nil }); err == nil {
+		t.Fatal("unknown decoy page accepted")
+	}
+}

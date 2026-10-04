@@ -32,6 +32,14 @@ type Config struct {
 	Peers  []Peer      `json:"peers"`
 	Log    LogConfig   `json:"log"`
 	Stats  StatsConfig `json:"stats"`
+	Decoy  DecoyConfig `json:"decoy"`
+}
+
+// DecoyConfig replaces the web interface with a stock web server page.
+// The API keeps working, so the iOS app can turn it off again.
+type DecoyConfig struct {
+	Enabled bool   `json:"enabled"`
+	Page    string `json:"page"` // nginx | apache | soon
 }
 
 // StatsConfig sets how long traffic history is kept in stats.json.
@@ -223,6 +231,9 @@ func (c *Config) applyDefaults() {
 	if c.Stats.DailyDays == 0 {
 		c.Stats.DailyDays = 400
 	}
+	if c.Decoy.Page == "" {
+		c.Decoy.Page = "nginx"
+	}
 	if c.APITokens == nil {
 		c.APITokens = []APIToken{}
 	}
@@ -355,6 +366,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("hourly traffic history must be %d–%d hours", minHourlyHours, maxHourlyHrs)
 	} else if st.DailyDays < minDailyDays || st.DailyDays > maxDailyDays {
 		return fmt.Errorf("daily traffic history must be %d–%d days", minDailyDays, maxDailyDays)
+	}
+	if _, ok := decoyPages[c.Decoy.Page]; !ok {
+		return fmt.Errorf("unknown decoy page %q", c.Decoy.Page)
 	}
 	switch c.Web.TLS.Mode {
 	case "acme":
