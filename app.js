@@ -740,9 +740,50 @@
 
   // ---------- peers ----------
 
+  // PEER_SORT holds the sort keys of the peers table. Each returns a value
+  // where smaller sorts first; null always sorts last. Numbers start
+  // descending, text ascending.
+  const STATE_ORDER = ['online', 'offline', 'never', 'setup', 'nokey', 'disabled'];
+  const ipNum = (ip) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0);
+  const PEER_SORT = {
+    name: { label: 'Name', key: (p) => p.name.toLowerCase() },
+    address: { label: 'Address', key: (p) => ipNum(p.ipv4) },
+    status: { label: 'Status', key: (p) => STATE_ORDER.indexOf(peerState(p).key) * 1e13 - (p.stats.lastHandshake ? Date.parse(p.stats.lastHandshake) : 0) },
+    endpoint: { label: 'Endpoint', key: (p) => p.stats.endpoint ? ((p.stats.location && p.stats.location.country) || '~') + ' ' + p.stats.endpoint : null },
+    latency: { label: 'Latency', num: true, asc: true, key: (p) => { const st = latState(p); return st && st.ms != null ? st.ms : null; } },
+    down: { label: 'Download, 30 d', num: true, key: (p) => p.stats.down30d },
+    up: { label: 'Upload, 30 d', num: true, key: (p) => p.stats.up30d },
+    enabled: { label: 'Enabled', key: (p) => (p.enabled ? 0 : 1) },
+  };
+  let peerSort = { by: null, desc: false }; // kept while the app is open
+
   async function viewPeers(wrap) {
     let q = '', filter = 'all', data = await api('GET', '/peers');
     const tbody = h('tbody');
+    const headRow = h('tr');
+    const sortBy = (k) => {
+      const c = PEER_SORT[k];
+      peerSort = peerSort.by === k ? { by: k, desc: !peerSort.desc } : { by: k, desc: c.num && !c.asc };
+      drawHead();
+      drawRows();
+    };
+    const drawHead = () => headRow.replaceChildren(
+      ...Object.entries(PEER_SORT).map(([k, c]) => {
+        const on = peerSort.by === k;
+        return h('th', { class: c.num ? 'num' : null, 'aria-sort': on ? (peerSort.desc ? 'descending' : 'ascending') : 'none' },
+          h('button', { type: 'button', class: on ? 'sort on' : 'sort', onClick: () => sortBy(k) }, c.label,
+            h('span', { class: 'arrow', 'aria-hidden': 'true' }, on ? (peerSort.desc ? '↓' : '↑') : '↕')));
+      }),
+      h('th', null, h('span', { class: 'sr' }, 'Actions')));
+    const sorted = (rows) => {
+      if (!peerSort.by) return rows;
+      const key = PEER_SORT[peerSort.by].key, dir = peerSort.desc ? -1 : 1;
+      return rows.map((p) => [p, key(p)]).sort(([a, ka], [b, kb]) => {
+        if (ka == null || kb == null) return ka == null && kb == null ? 0 : ka == null ? 1 : -1;
+        const c = typeof ka === 'string' ? ka.localeCompare(kb) : ka - kb;
+        return c * dir || a.name.localeCompare(b.name);
+      }).map(([p]) => p);
+    };
     const empty = h('p', { class: 'empty', hidden: true }, 'No peers match this filter.');
     const sub = h('p', { class: 'sub' });
     const pills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Status filter' });
@@ -767,7 +808,7 @@
         const keep = filter === 'all' || filter === st || (filter === 'offline' && ['offline', 'never', 'setup', 'nokey'].includes(st));
         return hit && keep;
       });
-      tbody.replaceChildren(...rows.map((p) => h('tr', null,
+      tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
         h('td', null, h('a', { href: '#/peers/' + p.id }, h('strong', null, p.name)), p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
@@ -782,6 +823,7 @@
     };
 
     drawPills();
+    drawHead();
     drawRows();
     fill(wrap,
       h('div', { class: 'head' },
@@ -792,8 +834,7 @@
         h('input', { id: 'q', type: 'search', placeholder: 'Search name, address or note', style: { flex: '1 1 260px', maxWidth: '360px' }, onInput: (e) => { q = e.target.value.toLowerCase(); drawRows(); } }),
         pills),
       h('section', { class: 'card flush' }, h('div', { class: 'tbl' }, h('table', null,
-        h('thead', null, h('tr', null, ['Name', 'Address', 'Status', 'Endpoint'].map((t) => h('th', null, t)),
-          h('th', { class: 'num' }, 'Latency'), h('th', { class: 'num' }, 'Download, 30 d'), h('th', { class: 'num' }, 'Upload, 30 d'), h('th', null, 'Enabled'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+        h('thead', null, headRow),
         tbody), empty)),
       h('p', { class: 'muted', style: { margin: '0', fontSize: '13px' } }, 'Online means a handshake in the last 3 minutes. Latency is the round trip from the server through the tunnel to the device and back, median of the last 5 minutes; turn it on in a peer\'s settings. Download and Upload are measured from the peer\'s side. Changes apply live without disconnecting other peers.'));
     every(15000, async () => { try { data = await api('GET', '/peers'); drawRows(); } catch { /* keep last */ } });
@@ -937,8 +978,24 @@
   // ---------- peer detail ----------
 
   async function viewPeer(wrap, id) {
-    const [p, srv, sess] = await Promise.all([api('GET', '/peers/' + id), api('GET', '/server'), api('GET', '/peers/' + id + '/sessions?limit=50')]);
+    const [p, srv, sess] = await Promise.all([api('GET', '/peers/' + id), api('GET', '/server'), api('GET', '/peers/' + id + '/sessions?limit=100')]);
     const sessions = sess.sessions;
+    // The history shows the newest rows; the rest open on request.
+    const SHORT = 8;
+    let allSessions = false;
+    const sessBody = h('tbody');
+    const sessMore = h('button', { type: 'button', class: 'btn small', onClick: () => { allSessions = !allSessions; drawSessions(); } });
+    const drawSessions = () => {
+      sessBody.replaceChildren(...(allSessions ? sessions : sessions.slice(0, SHORT)).map((se) => h('tr', null,
+        h('td', null, fmtStamp(se.start)),
+        h('td', null, se.open ? [h('span', { class: 'badge' }, h('span', { class: 'dot ok' }), 'Online now'), ' ', fmtDuration(se.seconds)] : fmtDuration(se.seconds)),
+        h('td', null, fmtLocation(se.geo) || h('span', { class: 'muted' }, 'Unknown')),
+        h('td', { class: 'mono muted' }, se.ip),
+        h('td', { class: 'num' }, fmtBytes(se.down)),
+        h('td', { class: 'num' }, fmtBytes(se.up)))));
+      sessMore.textContent = allSessions ? 'Show fewer' : 'Show all ' + sessions.length;
+    };
+    drawSessions();
     let range = '7d';
     const st = peerState(p);
     const traffic = h('div');
@@ -1111,14 +1168,9 @@
         sessions.length ? h('div', { class: 'tbl' }, h('table', null,
           h('thead', null, h('tr', null, h('th', null, 'Started'), h('th', null, 'Duration'), h('th', null, 'From'), h('th', null, 'Address'),
             h('th', { class: 'num' }, 'Download'), h('th', { class: 'num' }, 'Upload'))),
-          h('tbody', null, sessions.map((se) => h('tr', null,
-            h('td', null, fmtStamp(se.start)),
-            h('td', null, se.open ? [h('span', { class: 'badge' }, h('span', { class: 'dot ok' }), 'Online now'), ' ', fmtDuration(se.seconds)] : fmtDuration(se.seconds)),
-            h('td', null, fmtLocation(se.geo) || h('span', { class: 'muted' }, 'Unknown')),
-            h('td', { class: 'mono muted' }, se.ip),
-            h('td', { class: 'num' }, fmtBytes(se.down)),
-            h('td', { class: 'num' }, fmtBytes(se.up)))))))
+          sessBody))
           : h('p', { class: 'empty' }, 'No connections recorded yet.'),
+        sessions.length > SHORT ? h('div', { style: { margin: '8px 12px 0' } }, sessMore) : null,
         h('p', { class: 'hint', style: { margin: '4px 12px 12px' } }, 'Country and network: ',
           h('a', { href: 'https://db-ip.com', target: '_blank', rel: 'noopener' }, 'IP Geolocation by DB-IP'),
           '. Kept as long as the daily traffic history.')),
