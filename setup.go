@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -273,7 +274,51 @@ WantedBy=multi-user.target
 // rewrite the unit for every release.
 const unitVersion = "unit-1"
 
-const sysctlConf = "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n"
+// sysctlConf turns on forwarding. With IPv6 forwarding on, Linux ignores
+// router announcements unless accept_ra is 2, and a server that gets its
+// IPv6 route from them (SLAAC, e.g. a Raspberry Pi at home) loses IPv6 when
+// the route expires. So every interface in ras keeps accepting them, as
+// pivpn does for its uplink.
+func sysctlConf(ras []string) string {
+	var b strings.Builder
+	b.WriteString("net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\nnet.ipv6.conf.default.accept_ra=2\n")
+	for _, name := range ras {
+		fmt.Fprintf(&b, "net.ipv6.conf.%s.accept_ra=2\n", name)
+	}
+	return b.String()
+}
+
+// raInterfaces returns the network cards and the interface of the IPv6
+// default route, except those where router announcements are switched off
+// (accept_ra 0). The directories are /proc/sys/net/ipv6/conf and
+// /sys/class/net, routes is /proc/net/ipv6_route.
+func raInterfaces(confDir, netDir, routes string) []string {
+	want := map[string]bool{}
+	if b, err := os.ReadFile(routes); err == nil {
+		for _, line := range strings.Split(string(b), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 10 && f[0] == strings.Repeat("0", 32) && f[1] == "00" && f[9] != "lo" {
+				want[f[9]] = true
+			}
+		}
+	}
+	entries, _ := os.ReadDir(netDir)
+	for _, e := range entries {
+		// Only real devices: bridges, veth and tunnels come and go.
+		if _, err := os.Stat(filepath.Join(netDir, e.Name(), "device")); err == nil {
+			want[e.Name()] = true
+		}
+	}
+	var out []string
+	for name := range want {
+		v := readSysctl(filepath.Join(confDir, name, "accept_ra"))
+		if v == "1" || v == "2" {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
 
 // writeSystemFiles writes the unit, sysctl and module files. It reports
 // whether the unit changed (systemd must then reload).
@@ -281,7 +326,8 @@ func writeSystemFiles() (unitChanged bool, err error) {
 	if unitChanged, err = writeIfChanged(unitPath, unitFile(), 0o644); err != nil {
 		return false, err
 	}
-	sysChanged, err := writeIfChanged(sysctlPath, sysctlConf, 0o644)
+	ras := raInterfaces("/proc/sys/net/ipv6/conf", "/sys/class/net", "/proc/net/ipv6_route")
+	sysChanged, err := writeIfChanged(sysctlPath, sysctlConf(ras), 0o644)
 	if err != nil {
 		return false, err
 	}

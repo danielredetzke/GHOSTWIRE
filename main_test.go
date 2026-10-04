@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -373,6 +374,38 @@ func TestUnitFile(t *testing.T) {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %q", want)
 		}
+	}
+}
+
+func TestSysctlConf(t *testing.T) {
+	dir := t.TempDir()
+	conf, sys := filepath.Join(dir, "conf"), filepath.Join(dir, "net")
+	for name, ra := range map[string]string{"eth0": "1", "wlan0": "2", "eth1": "0", "br0": "1", "veth1": "1", "lo": "1"} {
+		_ = os.MkdirAll(filepath.Join(conf, name), 0o755)
+		_ = os.WriteFile(filepath.Join(conf, name, "accept_ra"), []byte(ra+"\n"), 0o644)
+	}
+	for _, name := range []string{"eth0", "wlan0", "eth1"} { // network cards
+		_ = os.MkdirAll(filepath.Join(sys, name, "device"), 0o755)
+	}
+	_ = os.MkdirAll(filepath.Join(sys, "veth1"), 0o755)
+	// br0 carries the default route; the lo line is the kernel's unreachable route.
+	routes := filepath.Join(dir, "ipv6_route")
+	_ = os.WriteFile(routes, []byte(
+		"00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003     br0\n"+
+			"00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo\n"), 0o644)
+
+	got := raInterfaces(conf, sys, routes)
+	if want := []string{"br0", "eth0", "wlan0"}; !slices.Equal(got, want) {
+		t.Fatalf("raInterfaces = %v, want %v", got, want)
+	}
+	c := sysctlConf(got)
+	for _, want := range []string{"net.ipv6.conf.all.forwarding=1\n", "net.ipv6.conf.default.accept_ra=2\n", "net.ipv6.conf.eth0.accept_ra=2\n", "net.ipv6.conf.br0.accept_ra=2\n"} {
+		if !strings.Contains(c, want) {
+			t.Errorf("sysctl conf lacks %q:\n%s", want, c)
+		}
+	}
+	if strings.Contains(c, "eth1") || strings.Contains(c, "veth1") {
+		t.Errorf("sysctl conf names eth1 (accept_ra 0) or veth1 (virtual):\n%s", c)
 	}
 }
 

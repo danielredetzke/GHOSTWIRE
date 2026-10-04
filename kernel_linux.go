@@ -3,13 +3,13 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
-	"strings"
 
 	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -318,14 +318,6 @@ func publicAddr(uplink string, v6 bool) (bool, string) {
 	return false, "no address on " + uplink
 }
 
-func readSysctl(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
 func (k *linuxKernel) Checks(c *Config) []Check {
 	var out []Check
 	link, err := netlink.LinkByName(c.Server.Interface)
@@ -340,6 +332,19 @@ func (k *linuxKernel) Checks(c *Config) []Check {
 	if c.Server.IPv6Enabled {
 		v := readSysctl("/proc/sys/net/ipv6/conf/all/forwarding")
 		out = append(out, Check{"IPv6 forwarding", v == "1", "net.ipv6.conf.all.forwarding=" + v})
+	}
+	// With IPv6 forwarding on, accept_ra 1 means router announcements are
+	// ignored: an IPv6 route learned from them expires (see sysctlConf).
+	if readSysctl("/proc/sys/net/ipv6/conf/all/forwarding") == "1" {
+		up := cmp.Or(k.Uplink(c, true), k.Uplink(c, false))
+		if ra := readSysctl("/proc/sys/net/ipv6/conf/" + up + "/accept_ra"); up != "" && ra != "" {
+			ok := ra != "1"
+			detail := "net.ipv6.conf." + up + ".accept_ra=" + ra
+			if !ok {
+				detail += ": IPv6 from router announcements stops working; run " + appName + " update"
+			}
+			out = append(out, Check{"IPv6 router announcements", ok, detail})
+		}
 	}
 	ok, detail := firewallPresent()
 	out = append(out, Check{"nftables rules", ok, detail})

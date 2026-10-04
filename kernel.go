@@ -3,6 +3,8 @@ package main
 import (
 	"log/slog"
 	"net/netip"
+	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,6 +38,15 @@ type Kernel interface {
 	Ping(dsts []netip.Addr, timeout time.Duration) (map[netip.Addr]time.Duration, error)
 	Down(c *Config) error
 	Close() error
+}
+
+// readSysctl returns the trimmed content of a /proc/sys file, or "".
+func readSysctl(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // Reconciler applies the config to the kernel whenever it is triggered and
