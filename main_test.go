@@ -218,7 +218,11 @@ func TestAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := hashPassword("a long test password")
-	_ = store.Update(func(c *Config) error { c.Admin.PasswordHash = hash; c.Server.Endpoint = "vpn.example.net"; return nil })
+	_ = store.Update(func(c *Config) error {
+		c.Users[0].PasswordHash = hash
+		c.Server.Endpoint = "vpn.example.net"
+		return nil
+	})
 	k := &fakeKernel{}
 	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
 	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
@@ -521,7 +525,11 @@ func TestSetupLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash, _ := hashPassword("a long test password")
-	_ = store.Update(func(c *Config) error { c.Admin.PasswordHash = hash; c.Server.Endpoint = "vpn.example.net"; return nil })
+	_ = store.Update(func(c *Config) error {
+		c.Users[0].PasswordHash = hash
+		c.Server.Endpoint = "vpn.example.net"
+		return nil
+	})
 	k := &fakeKernel{}
 	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
 	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
@@ -634,7 +642,7 @@ func TestInstallQuestions(t *testing.T) {
 	fresh := func() *Config {
 		c := &Config{}
 		c.applyDefaults()
-		c.Admin.PasswordHash = hash // skips the password question
+		c.Users[0].PasswordHash = hash // skips the password question
 		return c
 	}
 
@@ -737,4 +745,129 @@ func TestLatency(t *testing.T) {
 	if last := h[len(h)-1]; last.Sent != 4 || last.Lost != 1 || last.Med != 20 || last.RTTs != nil {
 		t.Fatalf("history %+v", last)
 	}
+}
+
+// TestConfigMigration turns a version 1 config with one admin into users.
+func TestConfigMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	hash, _ := hashPassword("a long test password")
+	old := `{"version":1,"admin":{"username":"dan","passwordHash":"` + hash + `"},` +
+		`"apiTokens":[{"id":"t1","name":"iPhone","hash":"sha256:x","scope":"rw"}]}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := store.Get()
+	if c.Version != 2 || c.Admin != nil || len(c.Users) != 1 || c.Users[0].Username != "dan" || c.Users[0].PasswordHash != hash {
+		t.Fatalf("not migrated: %+v", c.Users)
+	}
+	if c.APITokens[0].UserID != c.Users[0].ID {
+		t.Fatal("token not given to the migrated user")
+	}
+	raw, _ := os.ReadFile(path)
+	if bytes.Contains(raw, []byte(`"admin":`)) {
+		t.Fatal("old admin block still saved")
+	}
+}
+
+// TestUsers covers adding, the forced password change, resets, renames and
+// deleting users over HTTP.
+func TestUsers(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error { c.Users[0].PasswordHash = hash; return nil })
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+
+	// client returns a call function with its own cookie jar.
+	client := func() func(method, path string, body any, want int) map[string]any {
+		jar, _ := cookiejar.New(nil)
+		cl := &http.Client{Jar: jar}
+		return func(method, path string, body any, want int) map[string]any {
+			t.Helper()
+			var rd io.Reader
+			if body != nil {
+				b, _ := json.Marshal(body)
+				rd = bytes.NewReader(b)
+			}
+			req, _ := http.NewRequest(method, srv.URL+"/api/v1"+path, rd)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := cl.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var out map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			if resp.StatusCode != want {
+				t.Fatalf("%s %s: status %d, want %d: %v", method, path, resp.StatusCode, want, out)
+			}
+			return out
+		}
+	}
+	admin := client()
+	admin("POST", "/auth/login", map[string]string{"username": "ADMIN", "password": "a long test password"}, 200) // any letter case
+	me := admin("GET", "/auth/me", nil, 200)
+	myID := me["id"].(string)
+
+	// A new user with a temporary password can only change it.
+	eve := admin("POST", "/users", map[string]any{"username": "eve", "password": "temporary password 1"}, 201)["user"].(map[string]any)
+	eveID := eve["id"].(string)
+	if eve["mustChangePassword"] != true {
+		t.Fatal("mustChangePassword should default to true")
+	}
+	admin("POST", "/users", map[string]any{"username": "Eve", "password": "temporary password 1"}, 400) // taken, any case
+	admin("POST", "/users", map[string]any{"username": "short", "password": "short"}, 400)
+
+	e := client()
+	e("POST", "/auth/login", map[string]string{"username": "eve", "password": "temporary password 1"}, 200)
+	if e("GET", "/auth/me", nil, 200)["mustChangePassword"] != true {
+		t.Fatal("me should report the forced change")
+	}
+	e("GET", "/peers", nil, 403)
+	e("POST", "/auth/password", map[string]string{"current": "temporary password 1", "new": "temporary password 1"}, 400)
+	e("POST", "/auth/password", map[string]string{"current": "temporary password 1", "new": "eve's own password"}, 200)
+	e("GET", "/peers", nil, 200) // the session continues after the change
+
+	// A user created without the flag can work at once.
+	sam := admin("POST", "/users", map[string]any{"username": "sam", "password": "sam's password 123", "mustChangePassword": false}, 201)["user"].(map[string]any)
+	s := client()
+	s("POST", "/auth/login", map[string]string{"username": "sam", "password": "sam's password 123"}, 200)
+	s("GET", "/peers", nil, 200)
+
+	// A reset ends the user's sessions; the flag can be cleared later.
+	admin("POST", "/users/"+eveID+"/reset-password", map[string]any{"password": "another temp pw 1"}, 200)
+	e("GET", "/peers", nil, 401)
+	admin("PATCH", "/users/"+eveID, map[string]any{"mustChangePassword": false, "username": "eve2"}, 200)
+	e("POST", "/auth/login", map[string]string{"username": "eve2", "password": "another temp pw 1"}, 200)
+	e("GET", "/peers", nil, 200)
+	admin("POST", "/users/"+myID+"/reset-password", map[string]any{"password": "whatever password"}, 400) // own: use /auth/password
+
+	// Deleting a user removes their tokens and ends their sessions.
+	tok := s("POST", "/tokens", map[string]string{"name": "sam's phone", "scope": "rw"}, 201)
+	if l := admin("GET", "/tokens", nil, 200)["tokens"].([]any); l[0].(map[string]any)["owner"] != "sam" {
+		t.Fatalf("token owner: %v", l)
+	}
+	admin("DELETE", "/users/"+myID, nil, 400)
+	admin("DELETE", "/users/"+sam["id"].(string), nil, 200)
+	s("GET", "/peers", nil, 401)
+	if len(store.Get().APITokens) != 0 {
+		t.Fatalf("token of deleted user kept: %v", tok["name"])
+	}
+	if n := len(admin("GET", "/users", nil, 200)["users"].([]any)); n != 2 {
+		t.Fatalf("users: %d, want 2", n)
+	}
+	admin("PATCH", "/settings", map[string]any{"adminUsername": "x"}, 400)
 }

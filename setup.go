@@ -43,8 +43,8 @@ Usage (as root):
         replace the installed binary with this one and restart
   %s uninstall [-purge] [-y]
         remove the service, interface and firewall table (-purge also deletes %s)
-  %s passwd
-        set the admin password of the installed service
+  %s passwd [username]
+        set a user's password (default: the first user) of the installed service
   %s version
 
 Without a command it runs the service:
@@ -433,9 +433,9 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
-	if store.Get().Admin.PasswordHash == "" {
-		fmt.Println("\nChoose the admin password for the web interface (user \"admin\", at least 12 characters).")
-		if err := setPassword(configFile); err != nil {
+	if cfg := store.Get(); !cfg.passwordSet() {
+		fmt.Printf("\nChoose the password for the web interface (user %q, at least 12 characters).\n", cfg.Users[0].Username)
+		if err := setPassword(configFile, ""); err != nil {
 			return err
 		}
 	}
@@ -571,6 +571,11 @@ func cmdUpdate(args []string) error {
 		if rErr := copyFile(oldBin, installBin, 0o755, uid, gid); rErr != nil {
 			return fmt.Errorf("update failed and restoring the old binary failed too: %v (original error: %w)", rErr, err)
 		}
+		// The new version may have upgraded config.json to a format the old
+		// one cannot read.
+		if rErr := copyFile(backup, configFile, 0o600, uid, gid); rErr != nil {
+			return fmt.Errorf("update failed and restoring %s failed too: %v (original error: %w)", configFile, rErr, err)
+		}
 		if rErr := restartAndVerify(); rErr != nil {
 			return fmt.Errorf("update failed and the old version does not start either: %v (original error: %w)", rErr, err)
 		}
@@ -649,7 +654,7 @@ func cmdPasswd(args []string) error {
 	if os.Geteuid() != 0 && runtime.GOOS == "linux" {
 		return errors.New("run as root, e.g. with sudo")
 	}
-	if err := setPassword(*path); err != nil {
+	if err := setPassword(*path, fs.Arg(0)); err != nil {
 		return err
 	}
 	if *path == configFile && shOut("systemctl", "is-active", serviceName) == "active" {

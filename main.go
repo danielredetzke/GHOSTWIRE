@@ -53,7 +53,7 @@ func main() {
 
 	flag.Usage = usage
 	configPath := flag.String("config", defaultConfigPath(), "path to config.json; logs and stats are kept next to it")
-	passwd := flag.Bool("passwd", false, "set the admin password and exit")
+	passwd := flag.Bool("passwd", false, "set a user's password and exit (username as argument; default: the first user)")
 	down := flag.Bool("down", false, "remove the WireGuard interface and firewall rules and exit")
 	check := flag.Bool("check", false, "check that config.json is valid for this version and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -66,7 +66,7 @@ func main() {
 	var err error
 	switch {
 	case *passwd:
-		if err = setPassword(*configPath); err == nil {
+		if err = setPassword(*configPath, flag.Arg(0)); err == nil {
 			fmt.Fprintf(os.Stderr, "If the service is running: systemctl reload %s\n", serviceName)
 		}
 	case *down:
@@ -106,12 +106,25 @@ func readSecret(prompt string) (string, error) {
 	return strings.TrimRight(line, "\r\n"), err
 }
 
-func setPassword(path string) error {
+// setPassword sets a user's password from the terminal; it is the way back
+// in for someone locked out. An empty username means the first user.
+func setPassword(path, username string) error {
 	store, err := openStore(path)
 	if err != nil {
 		return err
 	}
-	pw, err := readSecret("New admin password: ")
+	cfg := store.Get()
+	u := &cfg.Users[0]
+	if username != "" {
+		if u = cfg.userByName(username); u == nil {
+			names := make([]string, len(cfg.Users))
+			for i, x := range cfg.Users {
+				names[i] = x.Username
+			}
+			return fmt.Errorf("no user %q; users: %s", username, strings.Join(names, ", "))
+		}
+	}
+	pw, err := readSecret(fmt.Sprintf("New password for %q: ", u.Username))
 	if err != nil {
 		return err
 	}
@@ -131,10 +144,15 @@ func setPassword(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := store.Update(func(c *Config) error { c.Admin.PasswordHash = hash; return nil }); err != nil {
+	id := u.ID
+	if err := store.Update(func(c *Config) error {
+		_, u := c.userByID(id)
+		u.PasswordHash, u.MustChangePassword = hash, false
+		return nil
+	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Password for %q saved.\n", store.Get().Admin.Username)
+	fmt.Fprintf(os.Stderr, "Password for %q saved.\n", u.Username)
 	return nil
 }
 
@@ -167,9 +185,9 @@ func run(configPath string) error {
 	}
 	defer logw.Close()
 	slog.Info("starting", "version", version, "config", configPath)
-	if cfg.Admin.PasswordHash == "" {
-		slog.Warn("no admin password set; run: sudo " + installBin + " passwd")
-		fmt.Fprintf(os.Stderr, "No admin password set. Run: sudo %s passwd\n", installBin)
+	if !cfg.passwordSet() {
+		slog.Warn("no password set; run: sudo " + installBin + " passwd")
+		fmt.Fprintf(os.Stderr, "No password set. Run: sudo %s passwd\n", installBin)
 	}
 
 	kernel, err := newKernel()

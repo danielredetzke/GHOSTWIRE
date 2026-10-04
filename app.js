@@ -106,6 +106,14 @@
   }
 
   const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+
+  // newPassword makes a temporary password like "k7qm-x2pd-9nfh-tw4c",
+  // without look-alike characters.
+  function newPassword() {
+    const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+    const r = crypto.getRandomValues(new Uint32Array(16));
+    return Array.from(r, (n, i) => (i && i % 4 === 0 ? '-' : '') + abc[n % abc.length]).join('');
+  }
   const sameList = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
 
   function peerState(p) {
@@ -210,6 +218,10 @@
     if (r.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
       me = null;
       showLogin();
+      throw new Error('Signed out');
+    }
+    if (r.status === 403 && data.code === 'password_change_required') {
+      showNewPassword();
       throw new Error('Signed out');
     }
     if (!r.ok) throw new Error(data.error || r.statusText);
@@ -512,6 +524,7 @@
     if (!me) {
       try { me = await api('GET', '/auth/me'); } catch { showLogin(); return; }
     }
+    if (me.mustChangePassword) { showNewPassword(); return; }
     if (!main || !main.isConnected) buildShell();
     every(30000, refreshSide);
     const hash = location.hash || '#/';
@@ -540,7 +553,7 @@
     cleanups = [];
     main = null;
     const err = h('p', { class: 'err-text', role: 'alert' });
-    const user = h('input', { id: 'u', autocomplete: 'username', value: 'admin', required: true });
+    const user = h('input', { id: 'u', autocomplete: 'username', autocapitalize: 'none', required: true });
     const pw = h('input', { id: 'p', type: 'password', autocomplete: 'current-password', required: true });
     // On hover the label turns into its Japanese reading; screen readers keep "Sign in".
     const btn = h('button', { type: 'submit', class: 'btn primary signin' },
@@ -552,7 +565,7 @@
       try {
         await api('POST', '/auth/login', { username: user.value, password: pw.value });
         me = await api('GET', '/auth/me');
-        render();
+        if (me.mustChangePassword) showNewPassword(pw.value); else render();
       } catch (x) {
         err.textContent = x.message;
         btn.disabled = false;
@@ -566,7 +579,47 @@
       brand(72),
       form),
       h('p', { class: 'loginfoot' }, 'WireGuard server manager')));
-    pw.focus();
+    user.focus();
+  }
+
+  // showNewPassword is the screen after signing in with a temporary password
+  // an admin chose. current is that password when the user just typed it.
+  function showNewPassword(current) {
+    cleanups.forEach((f) => f());
+    cleanups = [];
+    main = null;
+    const err = h('p', { class: 'err-text', role: 'alert' });
+    const cur = current ? null : h('input', { id: 'pc', type: 'password', autocomplete: 'current-password', required: true });
+    const p1 = h('input', { id: 'p1', type: 'password', autocomplete: 'new-password', placeholder: 'At least 12 characters', required: true });
+    const p2 = h('input', { id: 'p2', type: 'password', autocomplete: 'new-password', required: true });
+    const btn = h('button', { type: 'submit', class: 'btn primary' }, 'Save and continue');
+    const form = h('form', { class: 'loginform', onSubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      if (p1.value !== p2.value) { err.textContent = 'The passwords do not match'; return; }
+      btn.disabled = true;
+      try {
+        await api('POST', '/auth/password', { current: current || cur.value, new: p1.value });
+        me = await api('GET', '/auth/me');
+        render();
+      } catch (x) {
+        err.textContent = x.message;
+        btn.disabled = false;
+      }
+    } },
+    cur ? h('div', { class: 'field' }, h('label', { htmlFor: 'pc' }, 'Temporary password'), cur) : null,
+    h('div', { class: 'field' }, h('label', { htmlFor: 'p1' }, 'New password'), p1),
+    h('div', { class: 'field' }, h('label', { htmlFor: 'p2' }, 'Repeat password'), p2),
+    err, btn,
+    h('button', { type: 'button', class: 'linkbtn', onClick: logout }, 'Sign out'));
+    app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
+      brand(72),
+      h('div', { class: 'logintext' },
+        h('h1', null, me ? 'Welcome, ' + me.name : 'Choose a new password'),
+        h('p', null, 'An admin gave you a temporary password. Choose your own to continue.')),
+      form),
+      h('p', { class: 'loginfoot' }, 'WireGuard server manager')));
+    (cur || p1).focus();
   }
 
   // ---------- dashboard ----------
@@ -1177,14 +1230,14 @@
 
   async function viewSettings(wrap) {
     if (!me.isAdmin) {
-      fill(wrap, h('h1', null, 'Settings'), h('div', { class: 'notice' }, 'Only the admin account can change settings. API tokens cannot.'));
+      fill(wrap, h('h1', null, 'Settings'), h('div', { class: 'notice' }, 'API tokens cannot change settings. Sign in to the web interface.'));
       return;
     }
-    const [s, tk] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens')]);
+    const [s, tk, us] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens'), api('GET', '/users')]);
     let logLevelFilter = 'all';
 
-    // admin account
-    const uname = h('input', { id: 'u', value: s.adminUsername, autocomplete: 'username' });
+    // my account
+    const uname = h('input', { id: 'u', value: me.name, autocomplete: 'username', autocapitalize: 'none' });
     const cur = h('input', { id: 'pc', type: 'password', autocomplete: 'current-password' });
     const p1 = h('input', { id: 'p1', type: 'password', autocomplete: 'new-password', placeholder: 'At least 12 characters' });
     const p2 = h('input', { id: 'p2', type: 'password', autocomplete: 'new-password' });
@@ -1193,18 +1246,125 @@
       e.preventDefault();
       accErr.textContent = '';
       try {
-        if (uname.value.trim() !== s.adminUsername) {
-          await api('PATCH', '/settings', { adminUsername: uname.value.trim() });
-          toast('Username saved');
-        }
         if (p1.value || p2.value || cur.value) {
           if (p1.value !== p2.value) throw new Error('The new passwords do not match');
           await api('POST', '/auth/password', { current: cur.value, new: p1.value });
-          toast('Password changed. Please sign in again.');
-          me = null;
-          showLogin();
+          toast('Password changed. Other browsers are signed out.');
         }
+        if (uname.value.trim() !== me.name) {
+          await api('PATCH', '/users/' + me.id, { username: uname.value.trim() });
+          toast('Username saved');
+        }
+        me = await api('GET', '/auth/me');
+        main = null;
+        render();
       } catch (x) { accErr.textContent = x.message; }
+    };
+
+    // users
+    const userBody = h('tbody');
+    const drawUsers = (users) => userBody.replaceChildren(...users.map((u) => h('tr', null,
+      h('td', null, h('strong', null, u.username), u.you ? h('span', { class: 'tag plain' }, 'You') : null, u.note ? h('div', { class: 'note' }, u.note) : null),
+      h('td', null, u.mustChangePassword ? h('span', { class: 'badge warn' }, 'Must choose a password') : h('span', { class: 'muted' }, 'Active')),
+      h('td', null, u.lastLogin ? ago(u.lastLogin.at) + ' · ' + u.lastLogin.ip : h('span', { class: 'muted' }, 'Not since restart')),
+      h('td', null, u.tokens ? String(u.tokens) : h('span', { class: 'muted' }, 'None')),
+      h('td', null, fmtDate(u.created)),
+      h('td', { class: 'num' }, h('button', { type: 'button', class: 'btn small', onClick: () => editUser(u) }, 'Edit')))));
+    drawUsers(us.users);
+    const reloadUsers = async () => drawUsers((await api('GET', '/users')).users);
+    const pwField = (id, label) => {
+      const input = h('input', { id, class: 'mono', value: newPassword(), autocomplete: 'off' });
+      return {
+        input,
+        el: h('div', { class: 'field' }, h('label', { htmlFor: id }, label),
+          h('div', { class: 'row' }, input,
+            h('button', { type: 'button', class: 'btn', onClick: () => { input.value = newPassword(); } }, 'Generate'),
+            h('button', { type: 'button', class: 'btn', onClick: () => copy(input.value) }, 'Copy')),
+          h('span', { class: 'hint' }, 'Send it to the person yourself. At least 12 characters')),
+      };
+    };
+    const mustBox = (checked, hint) => {
+      const box = h('input', { type: 'checkbox', checked });
+      return { box, el: h('label', { class: 'check' }, box, h('span', null, 'Must choose a new password at first sign-in', h('br'), h('span', { class: 'hint' }, hint))) };
+    };
+    const addUser = () => {
+      const nm = h('input', { id: 'nu', autocomplete: 'off', autocapitalize: 'none', required: true });
+      const note = h('input', { id: 'nn', autocomplete: 'off' });
+      const pw = pwField('np', 'Password');
+      const must = mustBox(true, 'Untick it if you set a password the person keeps');
+      const e = h('p', { class: 'err-text', role: 'alert' });
+      dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+        ev.preventDefault();
+        e.textContent = '';
+        try {
+          await api('POST', '/users', { username: nm.value.trim(), note: note.value.trim(), password: pw.input.value, mustChangePassword: must.box.checked });
+          close();
+          toast('Added ' + nm.value.trim());
+          reloadUsers();
+        } catch (x) { e.textContent = x.message; }
+      } },
+      h('h2', null, 'Add user'),
+      h('p', null, 'Every user is an admin and can change everything, including other users.'),
+      h('div', { class: 'grid' },
+        h('div', { class: 'field' }, h('label', { htmlFor: 'nu' }, 'Username'), nm, h('span', { class: 'hint' }, 'Letters, numbers, . @ _ - · max 32')),
+        h('div', { class: 'field' }, h('label', { htmlFor: 'nn' }, 'Note'), note)),
+      pw.el, must.el, e,
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Add user'))));
+      nm.focus();
+    };
+    const editUser = (u) => {
+      const nm = h('input', { id: 'eu', value: u.username, autocomplete: 'off', autocapitalize: 'none', required: true });
+      const note = h('input', { id: 'en', value: u.note, autocomplete: 'off' });
+      const must = mustBox(u.mustChangePassword, u.mustChangePassword ? 'Untick it to let them keep the password they have' : 'Tick it to make them choose a new one at the next sign-in');
+      const e = h('p', { class: 'err-text', role: 'alert' });
+      dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+        ev.preventDefault();
+        e.textContent = '';
+        try {
+          const body = {};
+          if (nm.value.trim() !== u.username) body.username = nm.value.trim();
+          if (note.value.trim() !== u.note) body.note = note.value.trim();
+          if (!u.you && must.box.checked !== u.mustChangePassword) body.mustChangePassword = must.box.checked;
+          if (Object.keys(body).length) await api('PATCH', '/users/' + u.id, body);
+          close();
+          if (u.you) { me = await api('GET', '/auth/me'); main = null; render(); } else reloadUsers();
+        } catch (x) { e.textContent = x.message; }
+      } },
+      h('h2', null, 'Edit ' + u.username),
+      h('div', { class: 'grid' },
+        h('div', { class: 'field' }, h('label', { htmlFor: 'eu' }, 'Username'), nm),
+        h('div', { class: 'field' }, h('label', { htmlFor: 'en' }, 'Note'), note)),
+      u.you ? h('p', { class: 'hint' }, 'Change your own password under My account.') : [
+        must.el,
+        h('div', { class: 'actions' },
+          h('button', { type: 'button', class: 'btn', onClick: () => { close(); resetUser(u); } }, 'Reset password…'),
+          h('button', { type: 'button', class: 'btn danger', onClick: () => { close(); deleteUser(u); } }, 'Delete user…'))],
+      e,
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
+    };
+    const resetUser = (u) => {
+      const pw = pwField('rp', 'New password');
+      const must = mustBox(true, 'Untick it if you set a password the person keeps');
+      const e = h('p', { class: 'err-text', role: 'alert' });
+      dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+        ev.preventDefault();
+        e.textContent = '';
+        try {
+          await api('POST', '/users/' + u.id + '/reset-password', { password: pw.input.value, mustChangePassword: must.box.checked });
+          close();
+          toast('Password reset for ' + u.username);
+          reloadUsers();
+        } catch (x) { e.textContent = x.message; }
+      } },
+      h('h2', null, 'Reset password for ' + u.username),
+      h('p', null, u.username + ' is signed out in every browser. Their app tokens keep working.'),
+      pw.el, must.el, e,
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Reset password'))));
+    };
+    const deleteUser = async (u) => {
+      const tokens = u.tokens ? ' Their ' + (u.tokens === 1 ? 'app token is' : u.tokens + ' app tokens are') + ' revoked too.' : '';
+      if (!await confirmDialog({ title: 'Delete ' + u.username + '?', text: u.username + ' is signed out and can no longer sign in.' + tokens, ok: 'Delete user', danger: true })) return;
+      try { await api('DELETE', '/users/' + u.id); toast('Deleted ' + u.username); reloadUsers(); reloadTokens(); } catch (x) { toast(x.message, true); }
     };
 
     // web interface
@@ -1244,11 +1404,12 @@
     const tbody = h('tbody');
     const drawTokens = (tokens) => tbody.replaceChildren(...(tokens.length ? tokens.map((t) => h('tr', null,
       h('td', null, t.name),
+      h('td', null, t.owner),
       h('td', null, h('span', { class: 'badge' }, t.scope === 'ro' ? 'Read only' : 'Full access')),
       h('td', null, fmtDate(t.created)),
       h('td', null, t.lastUsed ? ago(t.lastUsed.at) + ' · ' + t.lastUsed.ip : 'Not since restart'),
       h('td', { class: 'num' }, h('button', { type: 'button', class: 'btn danger small', onClick: () => revoke(t) }, 'Revoke'))))
-      : [h('tr', null, h('td', { colspan: '5', class: 'muted' }, 'No tokens yet.'))]));
+      : [h('tr', null, h('td', { colspan: '6', class: 'muted' }, 'No tokens yet.'))]));
     drawTokens(tk.tokens);
     const reloadTokens = async () => drawTokens((await api('GET', '/tokens')).tokens);
     const revoke = async (t) => {
@@ -1355,12 +1516,12 @@
     } });
 
     fill(wrap,
-      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Web interface, API access for the iOS app, logs, data retention and backups')),
+      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Users, web interface, API access for the iOS app, logs, data retention and backups')),
       restartBox,
 
       h('form', { class: 'card', onSubmit: savePw, 'aria-labelledby': 'acc' },
-        h('h2', { id: 'acc' }, 'Admin account'),
-        h('p', { class: 'lead' }, 'One admin account. The iOS app signs in with an API token, not this password.'),
+        h('h2', { id: 'acc' }, 'My account'),
+        h('p', { class: 'lead' }, 'Changing your password signs you out in other browsers. Your app tokens keep working.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'u' }, 'Username'), uname),
           h('div', { class: 'field' }, h('label', { htmlFor: 'pc' }, 'Current password'), cur),
@@ -1368,6 +1529,14 @@
           h('div', { class: 'field' }, h('label', { htmlFor: 'p2' }, 'Confirm new password'), p2)),
         accErr,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn' }, 'Save account'))),
+
+      h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
+        h('div', { class: 'cardhead' },
+          h('div', null, h('h2', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
+          h('button', { type: 'button', class: 'btn primary', onClick: addUser }, 'Add user')),
+        h('div', { class: 'tbl' }, h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'User'), h('th', null, 'Status'), h('th', null, 'Last sign-in'), h('th', null, 'App tokens'), h('th', null, 'Created'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          userBody))),
 
       h('form', { class: 'card', onSubmit: saveWeb, 'aria-labelledby': 'web' },
         h('h2', { id: 'web' }, 'Web interface'),
@@ -1388,7 +1557,7 @@
           h('div', null, h('h2', { id: 'api' }, 'API tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'For the iOS app and scripts. A token appears once when you create it, and only a hash is stored.')),
           h('button', { type: 'button', class: 'btn primary', onClick: newToken }, 'Pair iOS app')),
         h('div', { class: 'tbl section' }, h('table', { class: 'narrow' },
-          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Owner'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
           tbody))),
 
       h('section', { class: 'card', 'aria-labelledby': 'lg' },

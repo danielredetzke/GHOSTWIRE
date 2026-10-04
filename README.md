@@ -45,7 +45,7 @@ dependencies on the server: the binary installs, updates and removes itself.
 - **The service is not root.** It runs as user `ghostwire` with only
   `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, and can write only to
   `/opt/ghostwire`.
-- **Sign-in:** one admin account. The password is stored as an argon2id hash.
+- **Sign-in:** one or more users, all admins. Passwords are stored as argon2id hashes.
   After 5 failed attempts, sign-in is locked for 15 minutes. Sessions use an
   HttpOnly, SameSite=Strict cookie and last 12 hours by default.
 - **API tokens** are stored only as hashes and can be read-only or full access.
@@ -150,17 +150,18 @@ questions offer the current settings, so Enter keeps them. If a changed
 endpoint or port means existing devices need a new config, the summary says
 how many.
 
-Then open `https://vpn.example.net` and sign in as `admin`. Root is needed only
-for the commands below, never for the running service.
+Then open `https://vpn.example.net` and sign in as `admin`. Add more users
+under Settings → Users. Root is needed only for the commands below, never for
+the running service.
 
 ## Commands (as root)
 
 | Command | What it does |
 |---|---|
 | `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. |
-| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>`, replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary is put back and restarted. It refuses older versions without `-force`. |
+| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>`, replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
 | `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
-| `GHOSTWIRE passwd` | Sets the admin password and reloads the running service. |
+| `GHOSTWIRE passwd [username]` | Sets a user's password (default: the first user) and reloads the running service. The way back in if you are locked out. |
 | `GHOSTWIRE version` | Prints the version. |
 
 Updating restarts only the management service. VPN connections stay up,
@@ -207,14 +208,21 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 
 ## API
 
-Base path `/api/v1`. The web interface signs in with a session cookie. Apps and
-scripts use `Authorization: Bearer <token>`; create the token under Settings →
-Pair iOS app. A read-only token may only use GET. Full-access tokens can do
-everything the web interface does except the admin-only endpoints: password,
-API tokens, backup and restore, and changing the admin username.
+Base path `/api/v1`. The web interface signs in with a session cookie; every
+user is an admin. Apps and scripts use `Authorization: Bearer <token>`; create
+the token under Settings → Pair iOS app. A token belongs to the user who made
+it and is revoked when that user is deleted. A read-only token may only use
+GET. Full-access tokens can do everything the web interface does except the
+endpoints marked "signed in": users, passwords, API tokens, backup and restore.
+
+`POST /users` and `POST /users/{id}/reset-password` take
+`{"password": "…", "mustChangePassword": true}`; with `true` (the default) the
+user can do nothing but choose a new password at the next sign-in.
 
 ```
-POST   /auth/login · /auth/logout        GET /auth/me        POST /auth/password (admin)
+POST   /auth/login · /auth/logout        GET /auth/me        POST /auth/password (own password)
+GET    /users      POST /users           PATCH /users/{id}   DELETE /users/{id}
+POST   /users/{id}/reset-password
 GET    /status                           GET /stats?range=24h|7d|30d|90d
 GET    /server         PATCH /server     POST /server/rotate-key     GET /server/detect-ip
 GET    /peers          POST /peers       (returns the config and QR once)
@@ -225,7 +233,7 @@ GET    /peers/{id}/latency               (24 h, one point per 5 minutes)
 GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
-admin: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
+signed in: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
 public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
 ```
 

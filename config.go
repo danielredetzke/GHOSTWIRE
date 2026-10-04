@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,14 +21,17 @@ import (
 // config.json and is the single source of truth: the kernel (interface, peers,
 // firewall) is reconciled to match it.
 type Config struct {
-	Version   int         `json:"version"`
-	Web       WebConfig   `json:"web"`
-	Admin     Admin       `json:"admin"`
-	APITokens []APIToken  `json:"apiTokens"`
-	Server    Server      `json:"server"`
-	Peers     []Peer      `json:"peers"`
-	Log       LogConfig   `json:"log"`
-	Stats     StatsConfig `json:"stats"`
+	Version   int        `json:"version"`
+	Web       WebConfig  `json:"web"`
+	Users     []User     `json:"users"`
+	APITokens []APIToken `json:"apiTokens"`
+	// Admin is the single account of config version 1; applyDefaults moves
+	// it into Users.
+	Admin  *Admin      `json:"admin,omitempty"`
+	Server Server      `json:"server"`
+	Peers  []Peer      `json:"peers"`
+	Log    LogConfig   `json:"log"`
+	Stats  StatsConfig `json:"stats"`
 }
 
 // StatsConfig sets how long traffic history is kept in stats.json.
@@ -69,11 +74,24 @@ type Admin struct {
 	PasswordHash string `json:"passwordHash"`
 }
 
+// User is an account for the web interface. Every user is an admin.
+type User struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	Note         string `json:"note,omitempty"`
+	PasswordHash string `json:"passwordHash"`
+	// MustChangePassword is set when an admin chose a temporary password:
+	// the user can do nothing else until they pick their own.
+	MustChangePassword bool      `json:"mustChangePassword,omitempty"`
+	Created            time.Time `json:"created"`
+}
+
 type APIToken struct {
 	ID      string    `json:"id"`
 	Name    string    `json:"name"`
 	Hash    string    `json:"hash"`
-	Scope   string    `json:"scope"` // rw | ro
+	Scope   string    `json:"scope"`  // rw | ro
+	UserID  string    `json:"userId"` // the user who created it
 	Created time.Time `json:"created"`
 }
 
@@ -136,12 +154,12 @@ type LogConfig struct {
 	MaxFiles  int    `json:"maxFiles"`
 }
 
-const configVersion = 1
+const configVersion = 2
 
 // applyDefaults fills zero values. It never overwrites values that are set,
 // so a minimal hand-written config.json grows into a complete one.
 func (c *Config) applyDefaults() {
-	if c.Version == 0 {
+	if c.Version < configVersion {
 		c.Version = configVersion
 	}
 	if c.Web.Listen == "" {
@@ -160,8 +178,19 @@ func (c *Config) applyDefaults() {
 	if c.Web.SessionHours == 0 {
 		c.Web.SessionHours = 12
 	}
-	if c.Admin.Username == "" {
-		c.Admin.Username = "admin"
+	if len(c.Users) == 0 {
+		u := User{ID: newID(), Username: "admin", Created: time.Now().UTC()}
+		if c.Admin != nil {
+			u.Username = cmp.Or(c.Admin.Username, "admin")
+			u.PasswordHash = c.Admin.PasswordHash
+		}
+		c.Users = []User{u}
+	}
+	c.Admin = nil
+	for i := range c.APITokens {
+		if c.APITokens[i].UserID == "" {
+			c.APITokens[i].UserID = c.Users[0].ID // tokens from before users existed
+		}
 	}
 	s := &c.Server
 	if s.Interface == "" {
@@ -236,6 +265,13 @@ func (c *Config) initServer() (bool, error) {
 }
 
 var peerNameRe = regexp.MustCompile(`^[a-zA-Z0-9.@_-]{1,32}$`)
+
+func validateUsername(name string) error {
+	if !peerNameRe.MatchString(name) || strings.HasPrefix(name, "-") || strings.HasPrefix(name, ".") {
+		return errors.New("username must be 1–32 characters: letters, digits and . @ _ -, not starting with - or .")
+	}
+	return nil
+}
 
 func validatePeerName(name string) error {
 	switch {
@@ -334,6 +370,33 @@ func (c *Config) validate() error {
 		return fmt.Errorf("unknown tls.mode %q", c.Web.TLS.Mode)
 	}
 
+	if len(c.Users) == 0 {
+		return errors.New("at least one user is required")
+	}
+	userIDs := map[string]bool{}
+	usernames := map[string]bool{}
+	for _, u := range c.Users {
+		if err := validateUsername(u.Username); err != nil {
+			return fmt.Errorf("user %q: %w", u.Username, err)
+		}
+		if usernames[strings.ToLower(u.Username)] {
+			return fmt.Errorf("username %q is used twice", u.Username)
+		}
+		if u.ID == "" || userIDs[u.ID] {
+			return fmt.Errorf("user %q: missing or duplicate id", u.Username)
+		}
+		if len(u.Note) > 200 {
+			return fmt.Errorf("user %q: note must be at most 200 characters", u.Username)
+		}
+		usernames[strings.ToLower(u.Username)] = true
+		userIDs[u.ID] = true
+	}
+	for _, t := range c.APITokens {
+		if !userIDs[t.UserID] {
+			return fmt.Errorf("API token %q belongs to no user", t.Name)
+		}
+	}
+
 	names := map[string]bool{}
 	ips := map[netip.Addr]bool{}
 	keys := map[string]bool{}
@@ -374,6 +437,30 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+func (c *Config) userByID(id string) (int, *User) {
+	for i := range c.Users {
+		if c.Users[i].ID == id {
+			return i, &c.Users[i]
+		}
+	}
+	return -1, nil
+}
+
+// userByName finds a user regardless of letter case.
+func (c *Config) userByName(name string) *User {
+	for i := range c.Users {
+		if strings.EqualFold(c.Users[i].Username, name) {
+			return &c.Users[i]
+		}
+	}
+	return nil
+}
+
+// passwordSet reports whether anyone can sign in yet.
+func (c *Config) passwordSet() bool {
+	return slices.ContainsFunc(c.Users, func(u User) bool { return u.PasswordHash != "" })
 }
 
 func (c *Config) peerByID(id string) (int, *Peer) {

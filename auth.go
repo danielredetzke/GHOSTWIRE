@@ -94,15 +94,21 @@ func hashToken(tok string) string {
 // --- sessions, token use and login throttling (in memory) ---
 
 type principal struct {
-	Name     string // "admin" or the token name
+	Name     string // the username, or the token name
+	UserID   string // the user, or the token's owner
 	Scope    string // rw | ro
 	TokenID  string
-	IsAdmin  bool
+	IsAdmin  bool // a signed-in user, not an API token
 	RemoteIP string
+	// MustChangePassword blocks everything but changing the password.
+	MustChangePassword bool
 }
 
 type session struct {
-	user    string
+	userID string
+	// stamp is the user's password hash at sign-in: a changed or reset
+	// password ends every session started with the old one.
+	stamp   string
 	expires time.Time
 }
 
@@ -122,6 +128,7 @@ type Auth struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	used     map[string]tokenUse
+	logins   map[string]tokenUse // last sign-in per user ID
 	fails    map[string]*failState
 }
 
@@ -131,7 +138,7 @@ const (
 )
 
 func newAuth(s *Store) *Auth {
-	return &Auth{store: s, sessions: map[string]*session{}, used: map[string]tokenUse{}, fails: map[string]*failState{}}
+	return &Auth{store: s, sessions: map[string]*session{}, used: map[string]tokenUse{}, logins: map[string]tokenUse{}, fails: map[string]*failState{}}
 }
 
 func cookieName() string { return appName + "_session" }
@@ -149,11 +156,18 @@ func (a *Auth) Login(user, pw, ip string) (string, error) {
 	a.mu.Unlock()
 
 	cfg := a.store.Get()
-	if cfg.Admin.PasswordHash == "" {
-		return "", errors.New("no admin password is set; run: " + appName + " -passwd")
+	if !cfg.passwordSet() {
+		return "", errors.New("no password is set; run: " + appName + " passwd")
 	}
-	okUser := subtle.ConstantTimeCompare([]byte(user), []byte(cfg.Admin.Username)) == 1
-	okPw := verifyPassword(cfg.Admin.PasswordHash, pw)
+	// An unknown username costs as much time as a wrong password, so the
+	// answer time does not tell which usernames exist.
+	u := cfg.userByName(strings.TrimSpace(user))
+	okUser := u != nil && u.PasswordHash != ""
+	hash := dummyHash()
+	if okUser {
+		hash = u.PasswordHash
+	}
+	okPw := verifyPassword(hash, pw)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -170,21 +184,47 @@ func (a *Auth) Login(user, pw, ip string) (string, error) {
 		return "", errors.New("wrong username or password")
 	}
 	delete(a.fails, ip)
+	a.logins[u.ID] = tokenUse{At: time.Now(), IP: ip}
+	return a.newSessionLocked(cfg, u), nil
+}
+
+// NewSession signs a user in again, e.g. after they changed their password.
+func (a *Auth) NewSession(u *User) string {
+	cfg := a.store.Get()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.newSessionLocked(cfg, u)
+}
+
+func (a *Auth) newSessionLocked(cfg *Config, u *User) string {
 	id := randomString(32)
-	a.sessions[id] = &session{user: cfg.Admin.Username, expires: time.Now().Add(time.Duration(cfg.Web.SessionHours) * time.Hour)}
-	return id, nil
+	a.sessions[id] = &session{userID: u.ID, stamp: u.PasswordHash, expires: time.Now().Add(time.Duration(cfg.Web.SessionHours) * time.Hour)}
+	return id
+}
+
+// LastLogin returns when the user last signed in since the service started.
+func (a *Auth) LastLogin(userID string) *tokenUse {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if u, ok := a.logins[userID]; ok {
+		return &u
+	}
+	return nil
+}
+
+var dummy struct {
+	once sync.Once
+	hash string
+}
+
+func dummyHash() string {
+	dummy.once.Do(func() { dummy.hash, _ = hashPassword(randomString(16)) })
+	return dummy.hash
 }
 
 func (a *Auth) Logout(id string) {
 	a.mu.Lock()
 	delete(a.sessions, id)
-	a.mu.Unlock()
-}
-
-// DropSessions signs everyone out, e.g. after a password change.
-func (a *Auth) DropSessions() {
-	a.mu.Lock()
-	a.sessions = map[string]*session{}
 	a.mu.Unlock()
 }
 
@@ -216,7 +256,7 @@ func (a *Auth) Authenticate(r *http.Request) (*principal, bool) {
 				a.mu.Lock()
 				a.used[t.ID] = tokenUse{At: time.Now(), IP: ip}
 				a.mu.Unlock()
-				return &principal{Name: t.Name, Scope: t.Scope, TokenID: t.ID, RemoteIP: ip}, true
+				return &principal{Name: t.Name, UserID: t.UserID, Scope: t.Scope, TokenID: t.ID, RemoteIP: ip}, true
 			}
 		}
 		return nil, false
@@ -225,6 +265,7 @@ func (a *Auth) Authenticate(r *http.Request) (*principal, bool) {
 	if err != nil {
 		return nil, false
 	}
+	cfg := a.store.Get()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.sessions[c.Value]
@@ -232,7 +273,14 @@ func (a *Auth) Authenticate(r *http.Request) (*principal, bool) {
 		delete(a.sessions, c.Value)
 		return nil, false
 	}
-	return &principal{Name: s.user, Scope: "rw", IsAdmin: true, RemoteIP: ip}, true
+	// The user is looked up on every request: a deleted user or a changed
+	// password ends the session at once.
+	_, u := cfg.userByID(s.userID)
+	if u == nil || u.PasswordHash != s.stamp {
+		delete(a.sessions, c.Value)
+		return nil, false
+	}
+	return &principal{Name: u.Username, UserID: u.ID, Scope: "rw", IsAdmin: true, RemoteIP: ip, MustChangePassword: u.MustChangePassword}, true
 }
 
 func (a *Auth) TokenUse(id string) *tokenUse {

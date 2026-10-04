@@ -77,7 +77,11 @@ func (a *App) guard(adminOnly bool, h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if adminOnly && !p.IsAdmin {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the admin account can do this"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "API tokens cannot do this; sign in to the web interface"})
+			return
+		}
+		if p.MustChangePassword && r.URL.Path != "/api/v1/auth/me" && r.URL.Path != "/api/v1/auth/password" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "choose a new password first", "code": "password_change_required"})
 			return
 		}
 		if p.Scope == "ro" && r.Method != http.MethodGet {
@@ -106,6 +110,11 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
 	g("GET /api/v1/auth/me", a.me)
 	adm("POST /api/v1/auth/password", a.changePassword)
+	adm("GET /api/v1/users", a.listUsers)
+	adm("POST /api/v1/users", a.createUser)
+	adm("PATCH /api/v1/users/{id}", a.patchUser)
+	adm("POST /api/v1/users/{id}/reset-password", a.resetPassword)
+	adm("DELETE /api/v1/users/{id}", a.deleteUser)
 
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
@@ -135,7 +144,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup/{token}", a.setupRedeem)
 
 	// Full-access tokens (the iOS app) may change app settings and read logs.
-	// Password, tokens and backups stay with the admin account.
+	// Users, passwords, tokens and backups need a signed-in user.
 	g("GET /api/v1/settings", a.getSettings)
 	g("PATCH /api/v1/settings", a.patchSettings)
 	g("POST /api/v1/restart", a.restart)
@@ -190,13 +199,16 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return
 	}
-	cfg := a.store.Get()
-	http.SetCookie(w, &http.Cookie{
-		Name: cookieName(), Value: id, Path: "/", HttpOnly: true, Secure: r.TLS != nil,
-		SameSite: http.SameSiteStrictMode, MaxAge: cfg.Web.SessionHours * 3600,
-	})
+	a.setSessionCookie(w, r, id)
 	slog.Info("login", "audit", true, "actor", in.Username, "remote", ip)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) setSessionCookie(w http.ResponseWriter, r *http.Request, id string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: cookieName(), Value: id, Path: "/", HttpOnly: true, Secure: r.TLS != nil,
+		SameSite: http.SameSiteStrictMode, MaxAge: a.store.Get().Web.SessionHours * 3600,
+	})
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -209,17 +221,28 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	p := who(r)
-	writeJSON(w, http.StatusOK, map[string]any{"name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope, "version": version})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
+		"mustChangePassword": p.MustChangePassword, "version": version,
+	})
 }
 
+// changePassword changes the signed-in user's own password. Their other
+// sessions end; this one continues with a new session id.
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Current, New string }
 	if err := readJSON(r, &in); err != nil {
 		writeErr(w, err)
 		return
 	}
-	if !verifyPassword(a.store.Get().Admin.PasswordHash, in.Current) {
+	id := who(r).UserID
+	_, u := a.store.Get().userByID(id)
+	if u == nil || !verifyPassword(u.PasswordHash, in.Current) {
 		writeErr(w, badRequest("current password is wrong"))
+		return
+	}
+	if in.New == in.Current {
+		writeErr(w, badRequest("choose a password different from the current one"))
 		return
 	}
 	if err := validatePassword(in.New); err != nil {
@@ -231,12 +254,24 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := a.store.Update(func(c *Config) error { c.Admin.PasswordHash = hash; return nil }); err != nil {
+	var updated User
+	if err := a.store.Update(func(c *Config) error {
+		_, u := c.userByID(id)
+		if u == nil {
+			return badRequest("no such user")
+		}
+		u.PasswordHash, u.MustChangePassword = hash, false
+		updated = *u
+		return nil
+	}); err != nil {
 		writeErr(w, err)
 		return
 	}
+	if c, err := r.Cookie(cookieName()); err == nil {
+		a.auth.Logout(c.Value)
+	}
+	a.setSessionCookie(w, r, a.auth.NewSession(&updated))
 	a.audit(r, "password changed")
-	a.auth.DropSessions()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -921,7 +956,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"log":           cfg.Log,
 		"stats":         cfg.Stats,
 		"geo":           a.geoStatus(),
-		"adminUsername": cfg.Admin.Username,
+		"adminUsername": a.username(cfg, who(r).UserID), // kept for older iOS app versions
 		"fingerprint":   a.tls.Fingerprint(),
 		"logPath":       a.logPath,
 	})
@@ -933,18 +968,12 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if _, ok := m["adminUsername"]; ok && !who(r).IsAdmin {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the admin account can change the username"})
+	if _, ok := m["adminUsername"]; ok {
+		writeErr(w, badRequest("usernames are changed under /users"))
 		return
 	}
 	var restart bool
 	err = a.store.Update(func(c *Config) error {
-		if err := field(m, "adminUsername", &c.Admin.Username); err != nil {
-			return err
-		}
-		if strings.TrimSpace(c.Admin.Username) == "" {
-			return badRequest("username cannot be empty")
-		}
 		before, _ := json.Marshal(c.Web)
 		if err := field(m, "web", &c.Web); err != nil {
 			return err
@@ -978,14 +1007,16 @@ type tokenView struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
 	Scope    string    `json:"scope"`
+	Owner    string    `json:"owner"` // username
 	Created  time.Time `json:"created"`
 	LastUsed *tokenUse `json:"lastUsed"`
 }
 
 func (a *App) listTokens(w http.ResponseWriter, r *http.Request) {
+	cfg := a.store.Get()
 	out := []tokenView{}
-	for _, t := range a.store.Get().APITokens {
-		out = append(out, tokenView{t.ID, t.Name, t.Scope, t.Created, a.auth.TokenUse(t.ID)})
+	for _, t := range cfg.APITokens {
+		out = append(out, tokenView{t.ID, t.Name, t.Scope, a.username(cfg, t.UserID), t.Created, a.auth.TokenUse(t.ID)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 }
@@ -1005,7 +1036,7 @@ func (a *App) createToken(w http.ResponseWriter, r *http.Request) {
 		in.Scope = "rw"
 	}
 	secret := tokenPrefix + randomString(32)
-	t := APIToken{ID: newID(), Name: in.Name, Hash: hashToken(secret), Scope: in.Scope, Created: time.Now().UTC()}
+	t := APIToken{ID: newID(), Name: in.Name, Hash: hashToken(secret), Scope: in.Scope, UserID: who(r).UserID, Created: time.Now().UTC()}
 	if err := a.store.Update(func(c *Config) error { c.APITokens = append(c.APITokens, t); return nil }); err != nil {
 		writeErr(w, err)
 		return

@@ -106,7 +106,7 @@ func (p installPlan) apply(c *Config) {
 		c.Server.ListenPort = p.port
 	}
 	if p.passwordHash != "" {
-		c.Admin.PasswordHash = p.passwordHash
+		c.Users[0].PasswordHash = p.passwordHash
 	}
 }
 
@@ -287,11 +287,11 @@ func askInstall(in io.Reader, cur *Config, existing bool, given map[string]bool,
 		}
 	}
 
-	// Admin account, only when no password is set yet.
-	if cur.Admin.PasswordHash == "" {
+	// First user, only when nobody has a password yet.
+	if !cur.passwordSet() {
 		fmt.Println("\nAdmin account")
 		for {
-			pw, err := readSecret(fmt.Sprintf("  Password for %q (at least 12 characters): ", cur.Admin.Username))
+			pw, err := readSecret(fmt.Sprintf("  Password for %q (at least 12 characters): ", cur.Users[0].Username))
 			if err != nil {
 				return p, errCancelled
 			}
@@ -393,6 +393,6 @@ func printInstallSummary(cur *Config, existing bool, p installPlan) {
 	fmt.Printf("  Tunnel network  %s\n", tunnel)
 	fmt.Printf("  Firewall        %s must be reachable\n", strings.Join(ports, ", "))
 	if p.passwordHash != "" {
-		fmt.Printf("  Admin           %s (password set)\n", next.Admin.Username)
+		fmt.Printf("  Admin           %s (password set)\n", next.Users[0].Username)
 	}
 }
