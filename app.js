@@ -1124,7 +1124,7 @@
         return hit && keep;
       });
       tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
-        h('td', null, h('a', { href: '#/peers/' + p.id }, h('strong', null, p.name)), p.note ? h('div', { class: 'note' }, p.note) : null),
+        h('td', null, h('a', { class: 'pname', href: '#/peers/' + p.id }, p.name), p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
