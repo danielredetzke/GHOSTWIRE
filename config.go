@@ -106,16 +106,19 @@ type ClientDefaults struct {
 // Peer is one client. Its private key is never stored: it is shown once when
 // the config is issued.
 type Peer struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Note         string     `json:"note"`
-	Enabled      bool       `json:"enabled"`
-	PublicKey    string     `json:"publicKey"`
-	PresharedKey string     `json:"presharedKey,omitempty"`
-	IPv4         string     `json:"ipv4"`
-	DNS          []string   `json:"dns,omitempty"`        // nil = server default
-	AllowedIPs   []string   `json:"allowedIPs,omitempty"` // nil = server default
-	Keepalive    *int       `json:"keepalive,omitempty"`  // nil = server default
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Note         string   `json:"note"`
+	Enabled      bool     `json:"enabled"`
+	PublicKey    string   `json:"publicKey"`
+	PresharedKey string   `json:"presharedKey,omitempty"`
+	IPv4         string   `json:"ipv4"`
+	DNS          []string `json:"dns,omitempty"`        // nil = server default
+	AllowedIPs   []string `json:"allowedIPs,omitempty"` // nil = server default
+	Keepalive    *int     `json:"keepalive,omitempty"`  // nil = server default
+	// LatencyCheck says when the server pings the peer through the tunnel:
+	// "" (off), "active" (while the device sends traffic) or "always".
+	LatencyCheck string     `json:"latencyCheck,omitempty"`
 	Created      time.Time  `json:"created"`
 	ConfigIssued *time.Time `json:"configIssued,omitempty"`
 	// Setup is a pending one-time setup link. A peer created with a link has
@@ -365,6 +368,9 @@ func (c *Config) validate() error {
 		}
 		if p.Keepalive != nil && (*p.Keepalive < 0 || *p.Keepalive > 3600) {
 			return fmt.Errorf("peer %q: keepalive must be 0–3600 seconds", p.Name)
+		}
+		if !validLatencyCheck(p.LatencyCheck) {
+			return fmt.Errorf("peer %q: latency check must be off, active or always", p.Name)
 		}
 	}
 	return nil

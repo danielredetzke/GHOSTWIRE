@@ -208,9 +208,10 @@ func run(configPath string) error {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); recon.Run(stop) }()
 	go func() { defer wg.Done(); stats.Run(stop) }()
+	go func() { defer wg.Done(); stats.RunPings(stop) }()
 	go func() { defer wg.Done(); geo.Run(stop) }()
 	go func() {
 		t := time.NewTicker(10 * time.Minute)

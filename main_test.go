@@ -162,6 +162,13 @@ func (k *fakeKernel) Checks(*Config) []Check              { return []Check{{"fak
 func (k *fakeKernel) Uplink(*Config, bool) string         { return "eth0" }
 func (k *fakeKernel) Down(*Config) error                  { return nil }
 func (k *fakeKernel) Close() error                        { return nil }
+func (k *fakeKernel) Ping(dsts []netip.Addr, _ time.Duration) (map[netip.Addr]time.Duration, error) {
+	out := map[netip.Addr]time.Duration{}
+	for _, d := range dsts {
+		out[d] = 20 * time.Millisecond
+	}
+	return out, nil
+}
 
 func TestStatsDeltas(t *testing.T) {
 	dir := t.TempDir()
@@ -679,5 +686,55 @@ func TestInstallQuestions(t *testing.T) {
 		if bad.check() == nil {
 			t.Errorf("%+v should be rejected", bad)
 		}
+	}
+}
+
+func TestLatency(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := newPrivateKey()
+	pub := key.PublicKey().String()
+	ip := serverIPv4(netip.MustParsePrefix(store.Get().Server.IPv4)).Next()
+	if err := store.Update(func(c *Config) error {
+		c.Peers = append(c.Peers, Peer{ID: "p1", Name: "phone", IPv4: ip.String(), PublicKey: pub, Enabled: true, LatencyCheck: latencyActive})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *Config) error { c.Peers[0].LatencyCheck = "sometimes"; return nil }); err == nil {
+		t.Fatal("invalid latency check accepted")
+	}
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	now := time.Now()
+	k.samples = []PeerSample{{PublicKey: pub, RxBytes: 100, LastHandshake: now}}
+	st.sample()
+	k.samples[0].RxBytes += 200 // below activeRxBytes: idle, e.g. keepalives
+	st.sample()
+	if got := st.pingTargets(store.Get(), now); len(got) != 0 {
+		t.Fatalf("idle peer pinged: %v", got)
+	}
+	k.samples[0].RxBytes += 50_000
+	st.sample()
+	if got := st.pingTargets(store.Get(), time.Now()); got[ip] != "p1" {
+		t.Fatalf("active peer not pinged: %v", got)
+	}
+
+	st.mu.Lock()
+	for _, ms := range []int{30, 10, 20} {
+		st.record("p1", now, time.Duration(ms)*time.Millisecond, true)
+	}
+	st.record("p1", now, 0, false)
+	st.mu.Unlock()
+	l := st.Summary("p1").Latency
+	if l == nil || l.MS == nil || *l.MS != 20 || l.Min != 10 || l.Max != 30 || l.Loss != 25 {
+		t.Fatalf("latency %+v", l)
+	}
+	h := st.LatencyHistory("p1")
+	if last := h[len(h)-1]; last.Sent != 4 || last.Lost != 1 || last.Med != 20 || last.RTTs != nil {
+		t.Fatalf("history %+v", last)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -123,6 +124,7 @@ func (a *App) routes() http.Handler {
 	g("POST /api/v1/peers/{id}/disable", a.setEnabled(false))
 	g("POST /api/v1/peers/{id}/issue-config", a.issueConfig)
 	g("GET /api/v1/peers/{id}/stats", a.peerStats)
+	g("GET /api/v1/peers/{id}/latency", a.peerLatency)
 	g("GET /api/v1/peers/{id}/sessions", a.peerSessions)
 	g("GET /api/v1/peers/{id}/setup", a.getSetup)
 	g("DELETE /api/v1/peers/{id}/setup", a.revokeSetup)
@@ -269,6 +271,9 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		ac.Detail = applyErr.Error()
 	}
 	checks = append(checks, ac)
+	if pc, ok := a.stats.PingCheck(cfg); ok {
+		checks = append(checks, pc)
+	}
 	healthy := true
 	for _, c := range checks {
 		healthy = healthy && c.OK
@@ -317,6 +322,26 @@ func (a *App) peerStats(w http.ResponseWriter, r *http.Request) {
 	}
 	rng := validRange(r)
 	writeJSON(w, http.StatusOK, map[string]any{"range": rng, "points": a.stats.series([]string{r.PathValue("id")}, rng)})
+}
+
+func (a *App) peerLatency(w http.ResponseWriter, r *http.Request) {
+	if _, p := a.store.Get().peerByID(r.PathValue("id")); p == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such peer"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stepSeconds": int(latencyStep.Seconds()), "points": a.stats.LatencyHistory(r.PathValue("id"))})
+}
+
+// latencyMode turns the API value into the stored one: "off" (or nothing)
+// is stored empty.
+func latencyMode(v string) (string, error) {
+	if v == "off" {
+		return latencyOff, nil
+	}
+	if !validLatencyCheck(v) {
+		return "", badRequest("latencyCheck must be off, active or always")
+	}
+	return v, nil
 }
 
 // --- server ---
@@ -517,6 +542,7 @@ type peerView struct {
 	EffDNS       []string    `json:"effectiveDNS"`
 	EffAllowed   []string    `json:"effectiveAllowedIPs"`
 	EffKeepalive int         `json:"effectiveKeepalive"`
+	LatencyCheck string      `json:"latencyCheck"` // off | active | always
 	Created      time.Time   `json:"created"`
 	ConfigIssued *time.Time  `json:"configIssued"`
 	Setup        *setupView  `json:"setup"` // null = no pending setup link
@@ -528,7 +554,8 @@ func (a *App) peerView(c *Config, p *Peer) peerView {
 		ID: p.ID, Name: p.Name, Note: p.Note, Enabled: p.Enabled, PublicKey: p.PublicKey,
 		HasPSK: p.PresharedKey != "", IPv4: p.IPv4, DNS: p.DNS, AllowedIPs: p.AllowedIPs, Keepalive: p.Keepalive,
 		EffDNS: peerDNS(c, p), EffAllowed: peerAllowedIPs(c, p), EffKeepalive: peerKeepalive(c, p),
-		Created: p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
+		LatencyCheck: cmp.Or(p.LatencyCheck, "off"),
+		Created:      p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
 	}
 	if c.Server.IPv6Enabled {
 		v.IPv6 = mapIPv6(netip.MustParsePrefix(c.Server.IPv6), netip.MustParseAddr(p.IPv4)).String()
@@ -610,6 +637,7 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 		AllowedIPs   []string `json:"allowedIPs"`
 		Keepalive    *int     `json:"keepalive"`
 		PresharedKey *bool    `json:"presharedKey"`
+		LatencyCheck string   `json:"latencyCheck"`
 		setupRequest
 	}
 	if err := readJSON(r, &in); err != nil {
@@ -617,6 +645,11 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
+	lc, err := latencyMode(in.LatencyCheck)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	link, err := in.newLink()
 	if err != nil {
 		writeErr(w, err)
@@ -624,7 +657,7 @@ func (a *App) createPeer(w http.ResponseWriter, r *http.Request) {
 	}
 	p := Peer{
 		ID: newID(), Name: in.Name, Note: strings.TrimSpace(in.Note), Enabled: true,
-		DNS: in.DNS, AllowedIPs: in.AllowedIPs, Keepalive: in.Keepalive, Created: time.Now().UTC(),
+		DNS: in.DNS, AllowedIPs: in.AllowedIPs, Keepalive: in.Keepalive, LatencyCheck: lc, Created: time.Now().UTC(),
 	}
 	// With a link, the keys are made when the link is opened.
 	var priv string
@@ -734,6 +767,18 @@ func (a *App) patchPeer(w http.ResponseWriter, r *http.Request) {
 				return badRequest("keepalive: %v", err)
 			}
 			changed = append(changed, "keepalive")
+		}
+		if raw, ok := m["latencyCheck"]; ok {
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return badRequest("latencyCheck: %v", err)
+			}
+			lc, err := latencyMode(v)
+			if err != nil {
+				return err
+			}
+			p.LatencyCheck = lc
+			changed = append(changed, "latencyCheck")
 		}
 		p.Name = strings.TrimSpace(p.Name)
 		p.Note = strings.TrimSpace(p.Note)

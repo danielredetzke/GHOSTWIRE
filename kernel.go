@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -30,6 +31,9 @@ type Kernel interface {
 	Sample(iface string) ([]PeerSample, error)
 	Checks(c *Config) []Check
 	Uplink(c *Config, v6 bool) string
+	// Ping sends one echo request to each address and returns the round-trip
+	// times of the replies that came within timeout.
+	Ping(dsts []netip.Addr, timeout time.Duration) (map[netip.Addr]time.Duration, error)
 	Down(c *Config) error
 	Close() error
 }

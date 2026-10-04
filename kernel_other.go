@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -89,3 +90,18 @@ func (k *simKernel) Uplink(c *Config, v6 bool) string {
 }
 
 func (k *simKernel) Down(*Config) error { return nil }
+
+// Ping invents round trips from the address, so each peer keeps its own
+// typical latency. Every seventh address never answers, like a Windows PC.
+func (k *simKernel) Ping(dsts []netip.Addr, _ time.Duration) (map[netip.Addr]time.Duration, error) {
+	out := map[netip.Addr]time.Duration{}
+	for _, d := range dsts {
+		last := int(d.As4()[3])
+		if last%7 == 4 {
+			continue
+		}
+		base := 8 + last*37%180
+		out[d] = time.Duration(base*1000+rand.IntN(base*300+1)) * time.Microsecond
+	}
+	return out, nil
+}

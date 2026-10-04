@@ -221,6 +221,7 @@ GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
 POST   /peers/{id}/enable | /disable | /issue-config
 GET    /peers/{id}/stats?range=…        GET /peers/{id}/sessions?limit=100
+GET    /peers/{id}/latency               (24 h, one point per 5 minutes)
 GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
@@ -235,6 +236,15 @@ link, the peer's current keys keep working until the link is opened.
 
 Traffic is reported from the peer's point of view: `down` is what the peer
 downloaded, `up` is what it uploaded.
+
+Latency is measured by pinging the peer's tunnel address every 30 seconds. Set
+it per peer with `PATCH /peers/{id}` `{"latencyCheck": "off"|"active"|"always"}`
+(default `off`). `active` pings only while the device sends traffic, so idle
+phones are not woken up; `always` keeps the tunnel up, so the peer always shows
+as online. The service opens an unprivileged ICMP socket, which needs its group
+in the sysctl `net.ipv4.ping_group_range` (systemd allows all groups by
+default). Devices that block ping, such as Windows with its default firewall,
+show no reply.
 
 ## Firewall note
 

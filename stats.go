@@ -37,6 +37,7 @@ type peerStats struct {
 	Hourly        []bucket      `json:"hourly"`
 	Daily         []bucket      `json:"daily"`
 	Sessions      []connSession `json:"sessions,omitempty"`
+	Latency       []latBucket   `json:"latency,omitempty"`
 }
 
 // session is one stretch of a peer being online from one address. When the
@@ -114,10 +115,13 @@ type Stats struct {
 	store  *Store
 	kernel Kernel
 	geo    *Geo // nil: no country and network lookups
+
+	live    map[string]*latLive // by peer ID
+	pingErr error               // of the last latency check
 }
 
 func openStats(path string, store *Store, k Kernel) (*Stats, error) {
-	s := &Stats{path: path, store: store, kernel: k, data: statsFile{Version: 1, Peers: map[string]*peerStats{}}}
+	s := &Stats{path: path, store: store, kernel: k, live: map[string]*latLive{}, data: statsFile{Version: 1, Peers: map[string]*peerStats{}}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -182,7 +186,7 @@ func (s *Stats) prune(c StatsConfig, now time.Time) {
 		if i > 0 {
 			ps.Sessions = append([]connSession(nil), ps.Sessions[i:]...)
 		}
-		if len(ps.Hourly) != h || len(ps.Daily) != dl || len(ps.Sessions) != sl {
+		if pruneLatency(ps, now) || len(ps.Hourly) != h || len(ps.Daily) != dl || len(ps.Sessions) != sl {
 			s.dirty = true
 		}
 	}
@@ -223,6 +227,9 @@ func (s *Stats) sample() {
 			dRx, dTx = smp.RxBytes, smp.TxBytes
 		}
 		ps.LastRx, ps.LastTx = smp.RxBytes, smp.TxBytes
+		if dRx >= activeRxBytes {
+			s.liveFor(id).lastActive = now
+		}
 		if dRx > 0 || dTx > 0 {
 			ps.TotalRx += dRx
 			ps.TotalTx += dTx
@@ -241,6 +248,7 @@ func (s *Stats) sample() {
 	for id, ps := range s.data.Peers {
 		if !exists[id] {
 			delete(s.data.Peers, id)
+			delete(s.live, id)
 			s.dirty = true
 			continue
 		}
@@ -349,16 +357,17 @@ func (s *Stats) series(ids []string, rng string) []Point {
 
 // PeerSummary is the live state shown in peer lists.
 type PeerSummary struct {
-	Online        bool       `json:"online"`
-	LastHandshake *time.Time `json:"lastHandshake"`
-	Endpoint      string     `json:"endpoint"`
-	Down24h       int64      `json:"down24h"`
-	Up24h         int64      `json:"up24h"`
-	Down30d       int64      `json:"down30d"`
-	Up30d         int64      `json:"up30d"`
-	DownTotal     int64      `json:"downTotal"`
-	UpTotal       int64      `json:"upTotal"`
-	Location      *GeoInfo   `json:"location"` // of the current or last endpoint
+	Online        bool         `json:"online"`
+	LastHandshake *time.Time   `json:"lastHandshake"`
+	Endpoint      string       `json:"endpoint"`
+	Down24h       int64        `json:"down24h"`
+	Up24h         int64        `json:"up24h"`
+	Down30d       int64        `json:"down30d"`
+	Up30d         int64        `json:"up30d"`
+	DownTotal     int64        `json:"downTotal"`
+	UpTotal       int64        `json:"upTotal"`
+	Location      *GeoInfo     `json:"location"` // of the current or last endpoint
+	Latency       *LatencyView `json:"latency"`  // null = never pinged
 }
 
 func sumPoints(pts []Point) (down, up int64) {
@@ -386,6 +395,7 @@ func (s *Stats) Summary(id string) PeerSummary {
 		if cur := ps.openSession(); cur != nil && cur.Geo != nil && hostOf(cur.Endpoint) == hostOf(ps.Endpoint) {
 			out.Location = cur.Geo
 		}
+		out.Latency = s.latencyView(id, ps, time.Now())
 	}
 	if out.Location == nil && out.Endpoint != "" {
 		out.Location = s.geo.Lookup(out.Endpoint)

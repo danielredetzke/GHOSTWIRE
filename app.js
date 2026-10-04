@@ -148,6 +148,54 @@
 
   const badge = (st) => h('span', { class: 'badge' }, h('span', { class: st.dot }), st.label);
 
+  // svg builds an SVG element; attrs are set as attributes.
+  function svg(tag, attrs, ...kids) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    add(el, kids);
+    return el;
+  }
+
+  const fmtMs = (ms) => (ms < 10 ? ms.toFixed(1) : String(Math.round(ms))) + ' ms';
+
+  // A latency value is stale when the server stopped pinging, e.g. because
+  // the device went idle; it is then shown greyed out.
+  const latStale = (l) => Date.now() - Date.parse(l.at) > 3 * 30000;
+
+  // latState describes a peer's latency for the lists: null when there is
+  // nothing to show.
+  function latState(p) {
+    if (!p.enabled || !p.publicKey) return null;
+    if (p.latencyCheck === 'off') return { note: 'Check off', title: 'The latency check is off for this peer' };
+    const l = p.stats.latency;
+    const idle = p.latencyCheck === 'active' ? 'Pinged only while the device sends traffic' : 'Not measured yet';
+    if (!l) return { note: '–', title: idle };
+    const stale = latStale(l);
+    const when = stale ? ' · measured ' + ago(l.at) : '';
+    if (l.ms == null) return { note: 'No ping reply', stale, title: 'The device does not answer ping. Windows blocks it in its firewall by default.' + when };
+    return { ms: l.ms, spark: l.spark, stale, title: 'Median of the last 5 minutes · ' + fmtMs(l.min) + '–' + fmtMs(l.max) + ' · ' + l.loss + ' % loss' + when };
+  }
+
+  // sparkline draws the medians of the last hour; gaps are skipped.
+  function sparkline(vals) {
+    const pts = (vals || []).map((v, i) => [i, v]).filter(([, v]) => v != null);
+    const s = svg('svg', { class: 'spark', viewBox: '0 0 56 18', 'aria-hidden': 'true' });
+    if (pts.length < 2) return s;
+    const lo = Math.min(...pts.map(([, v]) => v)), hi = Math.max(...pts.map(([, v]) => v));
+    const span = Math.max(hi - lo, hi * 0.2, 1);
+    const xy = ([i, v]) => [(i / (vals.length - 1) * 54 + 1).toFixed(1), (16 - (v - lo) / span * 14).toFixed(1)];
+    const [ex, ey] = xy(pts[pts.length - 1]);
+    s.append(svg('polyline', { points: pts.map((p) => xy(p).join(',')).join(' ') }), svg('circle', { cx: ex, cy: ey, r: 2 }));
+    return s;
+  }
+
+  function latCell(p) {
+    const st = latState(p);
+    if (!st) return h('td', { class: 'num muted' }, '–');
+    if (st.ms == null) return h('td', { class: 'num' }, h('span', { class: st.stale ? 'latnote stale' : 'latnote', title: st.title }, st.note));
+    return h('td', { class: 'num' }, h('span', { class: st.stale ? 'lat stale' : 'lat', title: st.title }, sparkline(st.spark), h('span', { class: 'mono' }, fmtMs(st.ms))));
+  }
+
   // ---------- API ----------
 
   async function api(method, path, body) {
@@ -344,6 +392,63 @@
       h('div', { class: 'xaxis' },
         h('span', null, pointLabel(points[0].t, range)),
         h('span', null, range === '24h' ? 'now' : pointLabel(points[points.length - 1].t, range))));
+  }
+
+  // latencyChart draws the median as a line over a min–max band, one point
+  // per 5 minutes; steps without replies leave a gap. Hover shows the values.
+  function latencyChart(points) {
+    const ok = (p) => p.sent > p.lost;
+    const peak = Math.max(0, ...points.filter(ok).map((p) => p.max));
+    const top = peak > 0 ? niceTop(peak) : 100;
+    const n = points.length, W = 1000, H = 100;
+    const x = (i) => (i + 0.5) / n * W, y = (v) => (H - v / top * H).toFixed(2);
+    const segs = [];
+    points.forEach((p, i) => {
+      if (!ok(p)) return;
+      const last = segs[segs.length - 1];
+      if (last && last[last.length - 1] === i - 1) last.push(i); else segs.push([i]);
+    });
+    const half = W / n * 0.4;
+    const shapes = segs.flatMap((seg) => {
+      // A lone point gets a short flat stretch so it stays visible.
+      const xs = seg.length > 1 ? seg.map(x) : [x(seg[0]) - half, x(seg[0]) + half];
+      const at = (k) => points[seg[Math.min(k, seg.length - 1)]];
+      const upper = xs.map((xv, k) => xv.toFixed(1) + ',' + y(at(k).max));
+      const lower = xs.map((xv, k) => xv.toFixed(1) + ',' + y(at(k).min)).reverse();
+      return [
+        svg('polygon', { class: 'band', points: upper.concat(lower).join(' ') }),
+        svg('polyline', { class: 'med', points: xs.map((xv, k) => xv.toFixed(1) + ',' + y(at(k).med)).join(' ') }),
+      ];
+    });
+    const cursor = svg('line', { class: 'cursor', x1: 0, x2: 0, y1: 0, y2: H, visibility: 'hidden' });
+    const plot = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', 'aria-hidden': 'true' }, shapes, cursor);
+    const label = (p) => {
+      const d = new Date(p.t * 1000);
+      return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    };
+    const withData = points.filter(ok);
+    const idle = () => withData.length
+      ? ['Median over 24 hours ', h('strong', null, fmtMs(withData.map((p) => p.med).sort((a, b) => a - b)[withData.length >> 1])), ' · hover the chart to see a time.']
+      : ['No measurements in the last 24 hours.'];
+    const readout = h('div', { class: 'readout' }, idle());
+    const wrapEl = h('div', { class: 'plot', role: 'img', 'aria-label': 'Latency over the last 24 hours',
+      onMousemove: (e) => {
+        const r = wrapEl.getBoundingClientRect();
+        const i = Math.max(0, Math.min(n - 1, Math.floor((e.clientX - r.left) / r.width * n)));
+        const p = points[i];
+        cursor.setAttribute('x1', x(i)); cursor.setAttribute('x2', x(i)); cursor.setAttribute('visibility', 'visible');
+        readout.replaceChildren(...(ok(p)
+          ? [label(p), ' · median ', h('strong', null, fmtMs(p.med)), ' · ' + fmtMs(p.min) + '–' + fmtMs(p.max) + ' · ' + Math.round(p.lost * 100 / p.sent) + ' % loss']
+          : [label(p), p.sent ? ' · no reply' : ' · not measured']));
+      },
+      onMouseleave: () => { cursor.setAttribute('visibility', 'hidden'); readout.replaceChildren(...idle()); } }, plot);
+    return h('div', null,
+      readout,
+      h('div', { class: 'chart small' },
+        h('div', { class: 'gl top' }), h('div', { class: 'gl mid' }), h('div', { class: 'gl base' }),
+        h('div', { class: 'yl top' }, fmtMs(top)), h('div', { class: 'yl mid' }, fmtMs(top / 2)),
+        wrapEl),
+      h('div', { class: 'xaxis' }, h('span', null, '24 h ago'), h('span', null, '12 h ago'), h('span', null, 'now')));
   }
 
   // ---------- shell, router ----------
@@ -574,6 +679,7 @@
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
           p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null),
+        latCell(p),
         h('td', { class: 'num' }, fmtBytes(p.stats.down30d)),
         h('td', { class: 'num' }, fmtBytes(p.stats.up30d)),
         h('td', null, h('input', { type: 'checkbox', class: 'sw', checked: p.enabled, 'aria-label': (p.enabled ? 'Disable ' : 'Enable ') + p.name, onChange: (e) => toggle(p, e.target.checked) })),
@@ -593,9 +699,9 @@
         pills),
       h('section', { class: 'card flush' }, h('div', { class: 'tbl' }, h('table', null,
         h('thead', null, h('tr', null, ['Name', 'Address', 'Status', 'Endpoint'].map((t) => h('th', null, t)),
-          h('th', { class: 'num' }, 'Download, 30 d'), h('th', { class: 'num' }, 'Upload, 30 d'), h('th', null, 'Enabled'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          h('th', { class: 'num' }, 'Latency'), h('th', { class: 'num' }, 'Download, 30 d'), h('th', { class: 'num' }, 'Upload, 30 d'), h('th', null, 'Enabled'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
         tbody), empty)),
-      h('p', { class: 'muted', style: { margin: '0', fontSize: '13px' } }, 'Online means a handshake in the last 3 minutes. Download and Upload are measured from the peer\'s side. Changes apply live without disconnecting other peers.'));
+      h('p', { class: 'muted', style: { margin: '0', fontSize: '13px' } }, 'Online means a handshake in the last 3 minutes. Latency is the round trip from the server through the tunnel to the device and back, median of the last 5 minutes; turn it on in a peer\'s settings. Download and Upload are measured from the peer\'s side. Changes apply live without disconnecting other peers.'));
     every(15000, async () => { try { data = await api('GET', '/peers'); drawRows(); } catch { /* keep last */ } });
   }
 
@@ -745,6 +851,21 @@
     const totals = h('div', { class: 'legend-row' });
     const pills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Time range' });
 
+    const showLat = p.latencyCheck !== 'off' || p.stats.latency;
+    const latBox = h('div');
+    async function drawLatency() {
+      if (!showLat) return;
+      try { latBox.replaceChildren(latencyChart((await api('GET', '/peers/' + id + '/latency')).points)); } catch (e) { latBox.replaceChildren(h('p', { class: 'err-text' }, e.message)); }
+    }
+    const latText = () => {
+      const l = p.stats.latency;
+      if (p.latencyCheck === 'off' && !l) return h('span', { class: 'muted' }, 'Check off');
+      if (!l) return h('span', { class: 'muted' }, p.latencyCheck === 'active' ? 'Not measured yet · pinged only while the device sends traffic' : 'Not measured yet');
+      const when = latStale(l) || p.latencyCheck === 'off' ? h('span', { class: 'muted' }, ' · measured ' + ago(l.at)) : null;
+      if (l.ms == null) return [h('span', null, 'No ping reply'), when];
+      return [h('span', { class: 'mono' }, fmtMs(l.ms)), h('span', { class: 'muted' }, ' median · ' + fmtMs(l.min) + '–' + fmtMs(l.max) + ' · ' + l.loss + ' % loss'), when];
+    };
+
     async function drawTraffic() {
       pills.replaceChildren(...[['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days']].map(([k, t]) =>
         h('button', { type: 'button', class: range === k ? 'pill on' : 'pill', 'aria-pressed': String(range === k), onClick: () => { range = k; drawTraffic(); } }, t)));
@@ -829,11 +950,19 @@
     const dns = choice({ id: 'dns', label: 'DNS', ...ch.dns, placeholder: '9.9.9.9' });
     const allowed = choice({ id: 'ai', label: 'Client AllowedIPs', ...ch.allowed, hint: 'Used in the client config', placeholder: '0.0.0.0/0, ::/0' });
     const ka = choice({ id: 'ka', label: 'Persistent keepalive', ...ch.ka, placeholder: 'Seconds' });
+    const LAT_HINTS = {
+      off: 'The server never pings this peer.',
+      active: 'Pings every 30 s while the device sends traffic. An idle device is left alone.',
+      always: 'Pings every 30 s, even when idle. This keeps the tunnel up, so the peer always shows as Online. Best for servers and routers.',
+    };
+    const latHint = h('span', { class: 'hint' }, LAT_HINTS[p.latencyCheck]);
+    const lc = h('select', { id: 'lc', onChange: () => { latHint.textContent = LAT_HINTS[lc.value]; } },
+      [['off', 'Off'], ['active', 'While the device is active'], ['always', 'Always']].map(([v, t]) => h('option', { value: v, selected: v === p.latencyCheck }, t)));
     const save = async (e) => {
       e.preventDefault();
       err.textContent = '';
       try {
-        const body = { name: name.value, note: note.value, ipv4: ip.value.trim(), ...overrides(dns, allowed, ka, srv) };
+        const body = { name: name.value, note: note.value, ipv4: ip.value.trim(), latencyCheck: lc.value, ...overrides(dns, allowed, ka, srv) };
         const res = await api('PATCH', '/peers/' + id, body);
         applied(res, 'Saved');
         render();
@@ -856,6 +985,13 @@
         h('div', { class: 'cardhead' }, h('div', null, h('h2', { id: 'traffic' }, 'Traffic'), totals), pills),
         traffic),
 
+      showLat ? h('section', { class: 'card', 'aria-labelledby': 'lat' },
+        h('div', { class: 'cardhead' }, h('h2', { id: 'lat' }, 'Latency · last 24 hours'),
+          h('div', { class: 'legend-row', style: { marginTop: '0' } },
+            h('span', null, h('span', { class: 'key down' }), 'Median'),
+            h('span', null, h('span', { class: 'key band' }), 'Min–max'))),
+        latBox) : null,
+
       h('div', { class: 'cols' },
         h('section', { class: 'card' },
           h('h2', null, 'Connection'),
@@ -864,6 +1000,7 @@
             h('dt', null, 'Endpoint'), h('dd', { class: 'mono' }, p.stats.endpoint || '–'),
             h('dt', null, 'Location'), h('dd', null, fmtLocation(p.stats.location) || '–'),
             h('dt', null, 'Latest handshake'), h('dd', null, ago(p.stats.lastHandshake)),
+            h('dt', null, 'Latency'), h('dd', null, latText()),
             h('dt', null, 'Public key'), h('dd', { class: 'mono' }, p.publicKey || '–'),
             h('dt', null, 'Preshared key'), h('dd', null, p.hasPresharedKey ? 'Set' : 'None'),
             h('dt', null, 'All-time traffic'), h('dd', null, 'Download ' + fmtBytes(p.stats.downTotal) + ' · Upload ' + fmtBytes(p.stats.upTotal)))),
@@ -894,17 +1031,18 @@
 
       h('form', { class: 'card', onSubmit: save },
         h('h2', null, 'Settings'),
-        h('p', { class: 'lead' }, 'Name and address changes apply immediately. DNS, AllowedIPs and keepalive are part of the client config: they take effect after the config is issued again.'),
+        h('p', { class: 'lead' }, 'Name, address and latency check changes apply immediately. DNS, AllowedIPs and keepalive are part of the client config: they take effect after the config is issued again.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'n' }, 'Name'), name, h('span', { class: 'hint' }, 'Letters, numbers, . _ @ - · max 32')),
           h('div', { class: 'field' }, h('label', { htmlFor: 'no' }, 'Note'), note),
           h('div', { class: 'field' }, h('label', { htmlFor: 'ip' }, 'IPv4 address'), ip, h('span', { class: 'hint' }, 'Changing it requires a new client config')),
-          ka.el, allowed.el, dns.el),
+          ka.el, allowed.el, dns.el,
+          h('div', { class: 'field' }, h('label', { htmlFor: 'lc' }, 'Latency check'), lc, latHint)),
         err,
         h('div', { class: 'formfoot' },
           h('button', { type: 'button', class: 'btn', onClick: render }, 'Cancel'),
           h('button', { type: 'submit', class: 'btn primary' }, 'Save changes'))));
-    await drawTraffic();
+    await Promise.all([drawTraffic(), drawLatency()]);
   }
 
   // ---------- server ----------
