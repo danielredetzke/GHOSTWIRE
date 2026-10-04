@@ -92,6 +92,17 @@ func (a *App) guard(adminOnly bool, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// fullAccess refuses read-only tokens, also for GET.
+func fullAccess(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if who(r).Scope == "ro" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this token is read-only"})
+			return
+		}
+		h(w, r)
+	}
+}
+
 // applyResult saves-then-applies: the config is already stored, so a kernel
 // error is reported but does not undo the change.
 func (a *App) apply() string {
@@ -105,16 +116,18 @@ func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	g := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(false, h)) }
 	adm := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(true, h)) }
+	// full is for signed-in users and full-access tokens, even for reading.
+	full := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(false, fullAccess(h))) }
 
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
 	g("GET /api/v1/auth/me", a.me)
-	adm("POST /api/v1/auth/password", a.changePassword)
-	adm("GET /api/v1/users", a.listUsers)
-	adm("POST /api/v1/users", a.createUser)
-	adm("PATCH /api/v1/users/{id}", a.patchUser)
-	adm("POST /api/v1/users/{id}/reset-password", a.resetPassword)
-	adm("DELETE /api/v1/users/{id}", a.deleteUser)
+	full("POST /api/v1/auth/password", a.changePassword)
+	full("GET /api/v1/users", a.listUsers)
+	full("POST /api/v1/users", a.createUser)
+	full("PATCH /api/v1/users/{id}", a.patchUser)
+	full("POST /api/v1/users/{id}/reset-password", a.resetPassword)
+	full("DELETE /api/v1/users/{id}", a.deleteUser)
 
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
@@ -143,14 +156,14 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/setup/{token}", a.setupInfo)
 	mux.HandleFunc("POST /api/v1/setup/{token}", a.setupRedeem)
 
-	// Full-access tokens (the iOS app) may change app settings and read logs.
-	// Users, passwords, tokens and backups need a signed-in user.
+	// Full-access tokens (the iOS app) may change app settings, read logs and
+	// manage users and tokens. Backups need a signed-in user.
 	g("GET /api/v1/settings", a.getSettings)
 	g("PATCH /api/v1/settings", a.patchSettings)
 	g("POST /api/v1/restart", a.restart)
-	adm("GET /api/v1/tokens", a.listTokens)
-	adm("POST /api/v1/tokens", a.createToken)
-	adm("DELETE /api/v1/tokens/{id}", a.deleteToken)
+	full("GET /api/v1/tokens", a.listTokens)
+	full("POST /api/v1/tokens", a.createToken)
+	full("DELETE /api/v1/tokens/{id}", a.deleteToken)
 	g("GET /api/v1/logs", a.logs)
 	g("GET /api/v1/logs/download", a.downloadLog)
 	adm("GET /api/v1/backup", a.backup)
@@ -225,6 +238,9 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
 		"mustChangePassword": p.MustChangePassword, "version": version, "session": p.Session,
+	}
+	if p.TokenID != "" {
+		out["tokenId"] = p.TokenID // lets an app find its own token in /tokens
 	}
 	if _, u := a.store.Get().userByID(p.UserID); u != nil {
 		out["username"], out["note"], out["created"] = u.Username, u.Note, u.Created

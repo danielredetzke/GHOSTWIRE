@@ -231,8 +231,9 @@ Base path `/api/v1`. The web interface signs in with a session cookie; every
 user is an admin. Apps and scripts use `Authorization: Bearer <token>`; create
 the token under Settings → Pair iOS app. A token belongs to the user who made
 it and is revoked when that user is deleted. A read-only token may only use
-GET. Full-access tokens can do everything the web interface does except the
-endpoints marked "signed in": users, passwords, API tokens, backup and restore.
+GET. Full-access tokens can do everything the web interface does except backup
+and restore. Users, passwords and API tokens need a full-access token even for
+reading.
 
 `POST /users` and `POST /users/{id}/reset-password` take
 `{"password": "…", "mustChangePassword": true}`; with `true` (the default) the
@@ -252,7 +253,8 @@ GET    /peers/{id}/latency               (24 h, one point per 5 minutes)
 GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
-signed in: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
+GET    /tokens     POST /tokens          DELETE /tokens/{id}
+signed in: GET /backup · POST /restore
 public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
 ```
 

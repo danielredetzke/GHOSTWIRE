@@ -328,6 +328,12 @@ func TestAPI(t *testing.T) {
 	bearer("GET", "/tokens", 403)
 	bearer("GET", "/peers/"+id+"/setup", 403) // the link would set up a device
 
+	// A full-access token manages users and tokens, but not backups.
+	secret = call("POST", "/tokens", map[string]string{"name": "full", "scope": "rw"}, 201)["token"].(string)
+	bearer("GET", "/users", 200)
+	bearer("GET", "/tokens", 200)
+	bearer("GET", "/backup", 403)
+
 	call("DELETE", "/peers/"+id, nil, 200)
 	if len(store.Get().Peers) != 0 {
 		t.Fatal("peer not deleted")
