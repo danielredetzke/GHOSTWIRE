@@ -12,6 +12,8 @@ remove), hands out client configs as a download or QR code, and records traffic
 and connection history per peer. There are no install scripts and no
 dependencies on the server: the binary installs, updates and removes itself.
 
+![Dashboard with peers online, traffic of the last 24 hours, the peer list and recent activity](screenshots/dashboard.png)
+
 ## Features
 
 - **One file of state:** everything lives in `config.json`. The kernel is
@@ -37,6 +39,19 @@ dependencies on the server: the binary installs, updates and removes itself.
   kept by default. Changes are marked as audit entries.
 - **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
   certificate files, or plain HTTP behind a reverse proxy.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Peers list with status, endpoint, latency sparklines and 30-day traffic](screenshots/peers.png) | ![Peer page with traffic and latency charts, connection details and history](screenshots/peer.png) |
+| **Peers:** status, endpoint, latency and traffic at a glance | **Peer:** traffic, latency, connection history and settings |
+| ![Server page with health checks, interface, endpoint, client defaults and firewall](screenshots/server.png) | ![Settings with users, web interface and API tokens](screenshots/settings.png) |
+| **Server:** health, address plan, client defaults and firewall | **Settings:** users, web interface and API tokens |
+| ![My account page with profile, password and own app tokens](screenshots/account.png) | ![Sign-in page](screenshots/login.png) |
+| **My account:** profile, password and your app tokens | **Sign-in** |
+
+The screenshots show sample data from the built-in simulator.
 
 ## Security
 
