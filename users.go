@@ -13,14 +13,15 @@ import (
 // everyone changes their own password with the current one.
 
 type userView struct {
-	ID                 string    `json:"id"`
-	Username           string    `json:"username"`
-	Note               string    `json:"note"`
-	MustChangePassword bool      `json:"mustChangePassword"`
-	Created            time.Time `json:"created"`
-	LastLogin          *tokenUse `json:"lastLogin"` // since the service started
-	Tokens             int       `json:"tokens"`
-	You                bool      `json:"you"`
+	ID                 string         `json:"id"`
+	Username           string         `json:"username"`
+	Note               string         `json:"note"`
+	MustChangePassword bool           `json:"mustChangePassword"`
+	Created            time.Time      `json:"created"`
+	LastLogin          *tokenUse      `json:"lastLogin"` // since the service started
+	Tokens             int            `json:"tokens"`
+	You                bool           `json:"you"`
+	MFA                map[string]any `json:"mfa"` // {"totp": bool, "keys": n, "passkeys": n}
 }
 
 func (a *App) userView(c *Config, u *User, me string) userView {
@@ -30,7 +31,7 @@ func (a *App) userView(c *Config, u *User, me string) userView {
 			n++
 		}
 	}
-	return userView{u.ID, u.Username, u.Note, u.MustChangePassword, u.Created, a.auth.LastLogin(u.ID), n, u.ID == me}
+	return userView{u.ID, u.Username, u.Note, u.MustChangePassword, u.Created, a.auth.LastLogin(u.ID), n, u.ID == me, mfaSummary(u)}
 }
 
 // username names a user for lists, or "" if the ID is unknown.

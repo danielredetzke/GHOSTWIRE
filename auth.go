@@ -102,7 +102,10 @@ type principal struct {
 	RemoteIP string
 	// MustChangePassword blocks everything but changing the password.
 	MustChangePassword bool
-	Session            *sessionInfo // nil for API tokens
+	// MFASetupRequired blocks everything but setting up two-step sign-in,
+	// when it is required and the user has none.
+	MFASetupRequired bool
+	Session          *sessionInfo // nil for API tokens
 }
 
 // sessionInfo is when and from where a browser session started.
@@ -138,6 +141,7 @@ type Auth struct {
 	used     map[string]tokenUse
 	logins   map[string]tokenUse // last sign-in per user ID
 	fails    map[string]*failState
+	mfa      mfaState
 }
 
 const (
@@ -146,26 +150,27 @@ const (
 )
 
 func newAuth(s *Store) *Auth {
-	return &Auth{store: s, sessions: map[string]*session{}, used: map[string]tokenUse{}, logins: map[string]tokenUse{}, fails: map[string]*failState{}}
+	return &Auth{store: s, sessions: map[string]*session{}, used: map[string]tokenUse{}, logins: map[string]tokenUse{}, fails: map[string]*failState{}, mfa: newMFAState()}
 }
 
 func cookieName() string { return appName + "_session" }
 
 var errLocked = errors.New("too many failed attempts, try again later")
 
-// Login checks the credentials and returns a new session id.
-func (a *Auth) Login(user, pw, ip string) (string, error) {
+// Login checks the credentials and returns a new session id, or, for a user
+// with two-step sign-in, a ticket for the second step.
+func (a *Auth) Login(user, pw, ip string) (sessionID, ticket string, err error) {
 	a.mu.Lock()
 	f := a.fails[ip]
 	if f != nil && time.Now().Before(f.until) {
 		a.mu.Unlock()
-		return "", errLocked
+		return "", "", errLocked
 	}
 	a.mu.Unlock()
 
 	cfg := a.store.Get()
 	if !cfg.passwordSet() {
-		return "", errors.New("no password is set; run: " + appName + " passwd")
+		return "", "", errors.New("no password is set; run: " + appName + " passwd")
 	}
 	// An unknown username costs as much time as a wrong password, so the
 	// answer time does not tell which usernames exist.
@@ -189,11 +194,14 @@ func (a *Auth) Login(user, pw, ip string) (string, error) {
 			f.count = 0
 			f.until = time.Now().Add(lockoutTime)
 		}
-		return "", errors.New("wrong username or password")
+		return "", "", errors.New("wrong username or password")
+	}
+	if u.hasMFA() {
+		return "", a.newTicketLocked(u, ip), nil
 	}
 	delete(a.fails, ip)
 	a.logins[u.ID] = tokenUse{At: time.Now(), IP: ip}
-	return a.newSessionLocked(cfg, u, sessionInfo{Started: time.Now(), IP: ip}), nil
+	return a.newSessionLocked(cfg, u, sessionInfo{Started: time.Now(), IP: ip}), "", nil
 }
 
 // NewSession replaces a session after the user changed their password; it
@@ -290,7 +298,8 @@ func (a *Auth) Authenticate(r *http.Request) (*principal, bool) {
 		return nil, false
 	}
 	info := s.info
-	return &principal{Name: u.Username, UserID: u.ID, Scope: "rw", IsAdmin: true, RemoteIP: ip, MustChangePassword: u.MustChangePassword, Session: &info}, true
+	return &principal{Name: u.Username, UserID: u.ID, Scope: "rw", IsAdmin: true, RemoteIP: ip, MustChangePassword: u.MustChangePassword,
+		MFASetupRequired: cfg.SignIn.RequireMFA && !u.hasMFA(), Session: &info}, true
 }
 
 func (a *Auth) TokenUse(id string) *tokenUse {
@@ -315,6 +324,18 @@ func (a *Auth) sweep() {
 	for ip, f := range a.fails {
 		if now.After(f.until) && f.count == 0 {
 			delete(a.fails, ip)
+		}
+	}
+	for id, t := range a.mfa.tickets {
+		if now.After(t.expires) {
+			delete(a.mfa.tickets, id)
+		}
+	}
+	for _, m := range []map[string]*ceremony{a.mfa.logins, a.mfa.enrolls} {
+		for id, c := range m {
+			if now.After(c.expires) {
+				delete(m, id)
+			}
 		}
 	}
 }

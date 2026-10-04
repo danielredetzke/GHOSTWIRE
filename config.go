@@ -27,12 +27,20 @@ type Config struct {
 	APITokens []APIToken `json:"apiTokens"`
 	// Admin is the single account of config version 1; applyDefaults moves
 	// it into Users.
-	Admin  *Admin      `json:"admin,omitempty"`
-	Server Server      `json:"server"`
-	Peers  []Peer      `json:"peers"`
-	Log    LogConfig   `json:"log"`
-	Stats  StatsConfig `json:"stats"`
-	Decoy  DecoyConfig `json:"decoy"`
+	Admin  *Admin       `json:"admin,omitempty"`
+	Server Server       `json:"server"`
+	Peers  []Peer       `json:"peers"`
+	Log    LogConfig    `json:"log"`
+	Stats  StatsConfig  `json:"stats"`
+	Decoy  DecoyConfig  `json:"decoy"`
+	SignIn SignInConfig `json:"signin"`
+}
+
+// SignInConfig holds the rules for signing in to the web interface.
+type SignInConfig struct {
+	// RequireMFA sends users without two-step sign-in to set it up before
+	// they can do anything else. API tokens are not affected.
+	RequireMFA bool `json:"requireMfa"`
 }
 
 // DecoyConfig replaces the web interface with a stock web server page.
@@ -92,6 +100,7 @@ type User struct {
 	// the user can do nothing else until they pick their own.
 	MustChangePassword bool      `json:"mustChangePassword,omitempty"`
 	Created            time.Time `json:"created"`
+	MFA                *UserMFA  `json:"mfa,omitempty"` // two-step sign-in, nil when never set up
 }
 
 type APIToken struct {

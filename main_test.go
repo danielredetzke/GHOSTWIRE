@@ -980,3 +980,144 @@ func TestDecoy(t *testing.T) {
 		t.Fatal("unknown decoy page accepted")
 	}
 }
+
+func TestTOTPCode(t *testing.T) {
+	// RFC 6238, appendix B (SHA-1), cut to 6 digits.
+	key := []byte("12345678901234567890")
+	for _, c := range []struct {
+		unix int64
+		want string
+	}{{59, "287082"}, {1111111109, "081804"}, {1234567890, "005924"}, {2000000000, "279037"}} {
+		if got := totpCode(key, uint64(c.unix/30)); got != c.want {
+			t.Errorf("time %d: %s, want %s", c.unix, got, c.want)
+		}
+	}
+	secret := b32.EncodeToString(key)
+	now := time.Unix(1111111109, 0)
+	if _, ok := totpMatch(secret, "081 804", now); !ok {
+		t.Error("code with a space refused")
+	}
+	if _, ok := totpMatch(secret, "081804", now.Add(90*time.Second)); ok {
+		t.Error("code three steps late accepted")
+	}
+}
+
+// TestMFA signs in with an authenticator code and a recovery code, and
+// checks the "require" switch and the admin reset.
+func TestMFA(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error { c.Users[0].PasswordHash = hash; return nil })
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+
+	client := func() func(method, path string, body any, want int) map[string]any {
+		jar, _ := cookiejar.New(nil)
+		cl := &http.Client{Jar: jar}
+		return func(method, path string, body any, want int) map[string]any {
+			t.Helper()
+			var rd io.Reader
+			if body != nil {
+				b, _ := json.Marshal(body)
+				rd = bytes.NewReader(b)
+			}
+			req, _ := http.NewRequest(method, srv.URL+"/api/v1"+path, rd)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := cl.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var out map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+			if resp.StatusCode != want {
+				t.Fatalf("%s %s: status %d, want %d: %v", method, path, resp.StatusCode, want, out)
+			}
+			return out
+		}
+	}
+	login := map[string]string{"username": "admin", "password": "a long test password"}
+	adm := client()
+	adm("POST", "/auth/login", login, 200)
+	if o := adm("GET", "/auth/options", nil, 200); o["passkeys"] != false {
+		t.Fatalf("passkeys offered on an IP address: %v", o)
+	}
+	adm("POST", "/auth/mfa/keys/begin", map[string]bool{"passkey": true}, 400)
+
+	// Turn on the authenticator app; the first method brings recovery codes.
+	setup := adm("POST", "/auth/mfa/totp/setup", nil, 200)
+	secret := setup["secret"].(string)
+	if !strings.HasPrefix(setup["uri"].(string), "otpauth://totp/") || setup["qr"] == "" {
+		t.Fatalf("setup: %v", setup)
+	}
+	adm("POST", "/auth/mfa/totp/confirm", map[string]string{"code": "000000"}, 400)
+	key, _ := b32.DecodeString(secret)
+	code := func(offset int) string { return totpCode(key, uint64(time.Now().Unix()/30)+uint64(offset)) }
+	conf := adm("POST", "/auth/mfa/totp/confirm", map[string]string{"code": code(0)}, 200)
+	codes := conf["recoveryCodes"].([]any)
+	if len(codes) != recoveryCount {
+		t.Fatalf("recovery codes: %v", conf)
+	}
+	if s := adm("GET", "/auth/mfa", nil, 200); s["totp"] != true || s["recoveryLeft"] != float64(recoveryCount) {
+		t.Fatalf("status: %v", s)
+	}
+
+	// A password alone now gives a ticket, not a session.
+	c := client()
+	r := c("POST", "/auth/login", login, 200)
+	ticket, _ := r["ticket"].(string)
+	if r["mfa"] != true || ticket == "" {
+		t.Fatalf("login without second step: %v", r)
+	}
+	c("GET", "/peers", nil, 401)
+	c("POST", "/auth/login/totp", map[string]string{"ticket": ticket, "code": "123456"}, 401)
+	c("POST", "/auth/login/totp", map[string]string{"ticket": ticket, "code": code(0)}, 401) // used during setup
+	c("POST", "/auth/login/totp", map[string]string{"ticket": ticket, "code": code(1)}, 200)
+	c("GET", "/peers", nil, 200)
+
+	// A recovery code works once.
+	c2 := client()
+	ticket = c2("POST", "/auth/login", login, 200)["ticket"].(string)
+	c2("POST", "/auth/login/recovery", map[string]string{"ticket": ticket, "code": strings.ToLower(codes[0].(string))}, 200)
+	c3 := client()
+	ticket = c3("POST", "/auth/login", login, 200)["ticket"].(string)
+	c3("POST", "/auth/login/recovery", map[string]string{"ticket": ticket, "code": codes[0].(string)}, 401)
+	c3("POST", "/auth/login/recovery", map[string]string{"ticket": ticket, "code": codes[1].(string)}, 200)
+
+	// Required for everyone: a user without it can only set it up.
+	adm("PATCH", "/settings", map[string]any{"signin": map[string]bool{"requireMfa": true}}, 200)
+	u := adm("POST", "/users", map[string]any{"username": "eve", "password": "eve's password 1", "mustChangePassword": false}, 201)["user"].(map[string]any)
+	e := client()
+	e("POST", "/auth/login", map[string]string{"username": "eve", "password": "eve's password 1"}, 200)
+	if me := e("GET", "/auth/me", nil, 200); me["mfaSetupRequired"] != true {
+		t.Fatalf("me: %v", me)
+	}
+	e("GET", "/peers", nil, 403)
+	e("GET", "/auth/mfa", nil, 200)
+	// The last method cannot be removed while it is required.
+	adm("DELETE", "/auth/mfa/totp", nil, 400)
+
+	// An admin resets another user's two-step sign-in, not their own.
+	_ = store.Update(func(c *Config) error {
+		_, eu := c.userByID(u["id"].(string))
+		eu.MFA = &UserMFA{TOTPSecret: newTOTPSecret(), RecoveryCodes: []string{"x"}}
+		return nil
+	})
+	if l := adm("GET", "/users", nil, 200)["users"].([]any); l[1].(map[string]any)["mfa"].(map[string]any)["totp"] != true {
+		t.Fatalf("users list: %v", l)
+	}
+	me := adm("GET", "/auth/me", nil, 200)
+	adm("POST", "/users/"+me["id"].(string)+"/reset-mfa", nil, 400)
+	adm("POST", "/users/"+u["id"].(string)+"/reset-mfa", nil, 200)
+	if _, eu := store.Get().userByID(u["id"].(string)); eu.hasMFA() || len(eu.MFA.RecoveryCodes) != 0 {
+		t.Fatal("reset left methods behind")
+	}
+}

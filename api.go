@@ -84,6 +84,11 @@ func (a *App) guard(adminOnly bool, h http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "choose a new password first", "code": "password_change_required"})
 			return
 		}
+		if p.MFASetupRequired && r.URL.Path != "/api/v1/auth/me" && r.URL.Path != "/api/v1/auth/password" &&
+			!strings.HasPrefix(r.URL.Path, "/api/v1/auth/mfa") {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "set up two-step sign-in first", "code": "mfa_setup_required"})
+			return
+		}
 		if p.Scope == "ro" && r.Method != http.MethodGet {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this token is read-only"})
 			return
@@ -121,6 +126,25 @@ func (a *App) routes() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
+	// The second step of signing in, and signing in with a passkey alone.
+	mux.HandleFunc("GET /api/v1/auth/options", a.signInOptions)
+	mux.HandleFunc("POST /api/v1/auth/login/totp", a.loginTOTP)
+	mux.HandleFunc("POST /api/v1/auth/login/recovery", a.loginRecovery)
+	mux.HandleFunc("POST /api/v1/auth/login/key/begin", a.loginKeyBegin)
+	mux.HandleFunc("POST /api/v1/auth/login/key/finish", a.loginKeyFinish)
+	mux.HandleFunc("POST /api/v1/auth/login/passkey/begin", a.loginPasskeyBegin)
+	mux.HandleFunc("POST /api/v1/auth/login/passkey/finish", a.loginPasskeyFinish)
+	// Your own two-step sign-in. Keys and passkeys need a browser, so these
+	// are for signed-in users only.
+	adm("GET /api/v1/auth/mfa", a.mfaStatus)
+	adm("POST /api/v1/auth/mfa/totp/setup", a.totpSetup)
+	adm("POST /api/v1/auth/mfa/totp/confirm", a.totpConfirm)
+	adm("DELETE /api/v1/auth/mfa/totp", a.totpRemove)
+	adm("POST /api/v1/auth/mfa/keys/begin", a.keyBegin)
+	adm("POST /api/v1/auth/mfa/keys/finish", a.keyFinish)
+	adm("PATCH /api/v1/auth/mfa/keys/{id}", a.keyRename)
+	adm("DELETE /api/v1/auth/mfa/keys/{id}", a.keyRemove)
+	adm("POST /api/v1/auth/mfa/recovery-codes", a.newRecoveryCodesHandler)
 	g("GET /api/v1/auth/me", a.me)
 	full("POST /api/v1/auth/password", a.changePassword)
 	full("GET /api/v1/users", a.listUsers)
@@ -128,6 +152,7 @@ func (a *App) routes() http.Handler {
 	full("PATCH /api/v1/users/{id}", a.patchUser)
 	full("POST /api/v1/users/{id}/reset-password", a.resetPassword)
 	full("DELETE /api/v1/users/{id}", a.deleteUser)
+	full("POST /api/v1/users/{id}/reset-mfa", a.resetMFA)
 
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
@@ -203,7 +228,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := remoteIP(r)
-	id, err := a.auth.Login(in.Username, in.Password, ip)
+	id, ticket, err := a.auth.Login(in.Username, in.Password, ip)
 	if err != nil {
 		slog.Warn("login failed", "user", in.Username, "remote", ip, "reason", err.Error())
 		code := http.StatusUnauthorized
@@ -211,6 +236,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 			code = http.StatusTooManyRequests
 		}
 		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	if ticket != "" {
+		// The password was right; the second step makes the session.
+		_, u := a.auth.ticketUserID(ticket)
+		writeJSON(w, http.StatusOK, map[string]any{"mfa": true, "ticket": ticket, "methods": mfaMethods(u)})
 		return
 	}
 	a.setSessionCookie(w, r, id)
@@ -237,7 +268,7 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	p := who(r)
 	out := map[string]any{
 		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
-		"mustChangePassword": p.MustChangePassword, "version": version, "session": p.Session,
+		"mustChangePassword": p.MustChangePassword, "mfaSetupRequired": p.MFASetupRequired, "version": version, "session": p.Session,
 	}
 	if p.TokenID != "" {
 		out["tokenId"] = p.TokenID // lets an app find its own token in /tokens
@@ -981,6 +1012,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"log":           cfg.Log,
 		"stats":         cfg.Stats,
 		"decoy":         cfg.Decoy,
+		"signin":        cfg.SignIn,
 		"geo":           a.geoStatus(),
 		"adminUsername": a.username(cfg, who(r).UserID), // kept for older iOS app versions
 		"fingerprint":   a.tls.Fingerprint(),
@@ -1010,6 +1042,9 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := field(m, "decoy", &c.Decoy); err != nil {
+			return err
+		}
+		if err := field(m, "signin", &c.SignIn); err != nil {
 			return err
 		}
 		return field(m, "log", &c.Log)

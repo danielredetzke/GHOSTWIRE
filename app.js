@@ -48,6 +48,7 @@
     server: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
     settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
     logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
   };
 
@@ -138,6 +139,16 @@
     return ts + '  ' + String(l.level).padEnd(5) + '  ' + l.msg + (rest ? '  ' + rest : '');
   }
 
+  // mfaText summarizes a user's two-step sign-in: "App, 2 keys" or "".
+  function mfaText(m) {
+    if (!m) return '';
+    const parts = [];
+    if (m.totp) parts.push('App');
+    if (m.keys) parts.push(m.keys === 1 ? '1 key' : m.keys + ' keys');
+    if (m.passkeys) parts.push(m.passkeys === 1 ? '1 passkey' : m.passkeys + ' passkeys');
+    return parts.join(', ');
+  }
+
   // "Germany · Deutsche Telekom AG", "Local network" or "".
   function fmtLocation(g) {
     if (!g) return '';
@@ -216,13 +227,17 @@
     const r = await fetch('/api/v1' + path, opt);
     let data = {};
     try { data = await r.json(); } catch { /* empty body */ }
-    if (r.status === 401 && path !== '/auth/login' && path !== '/auth/me') {
+    if (r.status === 401 && !path.startsWith('/auth/login') && path !== '/auth/me') {
       me = null;
       showLogin();
       throw new Error('Signed out');
     }
     if (r.status === 403 && data.code === 'password_change_required') {
       showNewPassword();
+      throw new Error('Signed out');
+    }
+    if (r.status === 403 && data.code === 'mfa_setup_required') {
+      showMFASetup();
       throw new Error('Signed out');
     }
     if (!r.ok) throw new Error(data.error || r.statusText);
@@ -566,6 +581,7 @@
       try { me = await api('GET', '/auth/me'); } catch { showLogin(); return; }
     }
     if (me.mustChangePassword) { showNewPassword(); return; }
+    if (me.mfaSetupRequired) { showMFASetup(); return; }
     if (!main || !main.isConnected) buildShell();
     every(30000, refreshSide);
     const hash = location.hash || '#/';
@@ -604,9 +620,9 @@
       err.textContent = '';
       btn.disabled = true;
       try {
-        await api('POST', '/auth/login', { username: user.value, password: pw.value });
-        me = await api('GET', '/auth/me');
-        if (me.mustChangePassword) showNewPassword(pw.value); else render();
+        const res = await api('POST', '/auth/login', { username: user.value, password: pw.value });
+        if (res.mfa) { showSecondStep(res.ticket, res.methods, pw.value); return; }
+        await signedIn(pw.value);
       } catch (x) {
         err.textContent = x.message;
         btn.disabled = false;
@@ -616,10 +632,303 @@
     h('div', { class: 'field' }, h('label', { htmlFor: 'u' }, 'Username'), user),
     h('div', { class: 'field' }, h('label', { htmlFor: 'p' }, 'Password'), pw),
     err, btn);
+    // A passkey signs in without username and password, where the address
+    // allows it.
+    const passkeyRow = h('div', { class: 'loginalt', hidden: true },
+      h('div', { class: 'or' }, 'or'),
+      h('button', { type: 'button', class: 'btn altbtn', onClick: async () => {
+        err.textContent = '';
+        try {
+          const b = await api('POST', '/auth/login/passkey/begin');
+          const cred = await webauthnGet(b.options);
+          await api('POST', '/auth/login/passkey/finish?id=' + encodeURIComponent(b.id), cred);
+          await signedIn();
+        } catch (x) { err.textContent = keyError(x); }
+      } }, icon('key', 18), 'Sign in with a passkey'));
+    if (window.PublicKeyCredential) {
+      api('GET', '/auth/options').then((o) => { passkeyRow.hidden = !o.passkeys; }).catch(() => {});
+    }
     app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
       brand(72),
-      form)));
+      form, passkeyRow)));
     user.focus();
+  }
+
+  // signedIn continues after a successful sign-in. password is the one just
+  // typed, if any, so a temporary password need not be typed again.
+  async function signedIn(password) {
+    me = await api('GET', '/auth/me');
+    if (me.mustChangePassword) showNewPassword(password); else render();
+  }
+
+  // ---------- two-step sign-in ----------
+
+  const b64dec = (s) => {
+    const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - s.length % 4) % 4));
+    return Uint8Array.from(b, (c) => c.charCodeAt(0)).buffer;
+  };
+  const b64enc = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  // webauthnCreate and webauthnGet turn the server's options into the
+  // browser call and the browser's answer back into JSON.
+  async function webauthnCreate(opts) {
+    const pk = opts.publicKey;
+    pk.challenge = b64dec(pk.challenge);
+    pk.user.id = b64dec(pk.user.id);
+    (pk.excludeCredentials || []).forEach((c) => { c.id = b64dec(c.id); });
+    const c = await navigator.credentials.create({ publicKey: pk });
+    return {
+      id: c.id, rawId: b64enc(c.rawId), type: c.type, authenticatorAttachment: c.authenticatorAttachment,
+      response: {
+        clientDataJSON: b64enc(c.response.clientDataJSON), attestationObject: b64enc(c.response.attestationObject),
+        transports: c.response.getTransports ? c.response.getTransports() : [],
+      },
+      clientExtensionResults: c.getClientExtensionResults(),
+    };
+  }
+
+  async function webauthnGet(opts) {
+    const pk = opts.publicKey;
+    pk.challenge = b64dec(pk.challenge);
+    (pk.allowCredentials || []).forEach((c) => { c.id = b64dec(c.id); });
+    const c = await navigator.credentials.get({ publicKey: pk });
+    return {
+      id: c.id, rawId: b64enc(c.rawId), type: c.type, authenticatorAttachment: c.authenticatorAttachment,
+      response: {
+        clientDataJSON: b64enc(c.response.clientDataJSON), authenticatorData: b64enc(c.response.authenticatorData),
+        signature: b64enc(c.response.signature), userHandle: c.response.userHandle ? b64enc(c.response.userHandle) : null,
+      },
+      clientExtensionResults: c.getClientExtensionResults(),
+    };
+  }
+
+  // keyError explains a failed key or passkey prompt.
+  function keyError(x) {
+    if (x && x.name === 'NotAllowedError') return 'Cancelled or timed out. Try again.';
+    if (x && x.name === 'InvalidStateError') return 'This key is already set up for your account.';
+    if (x && x.name === 'SecurityError') return 'Security keys need this site on its domain name with a trusted certificate.';
+    return x.message;
+  }
+
+  // showSecondStep asks for a key, an authenticator code or a recovery code
+  // after a correct password.
+  function showSecondStep(ticket, methods, password) {
+    cleanups.forEach((f) => f());
+    cleanups = [];
+    main = null;
+    const canKey = methods.includes('key') && !!window.PublicKeyCredential;
+    let mode = canKey ? 'key' : methods.includes('totp') ? 'totp' : 'recovery';
+    const box = h('div', { class: 'loginform' });
+    const TITLES = {
+      key: ['Use your security key', 'Insert your key and touch it, or use the passkey on this device.'],
+      totp: ['Enter the code', 'The 6-digit code from your authenticator app.'],
+      recovery: ['Use a recovery code', 'One of the codes you saved when you set up two-step sign-in. Each works once.'],
+    };
+    const LINKS = { key: 'Use a security key instead', totp: 'Use an authenticator code instead', recovery: 'Use a recovery code' };
+    const head = h('div', { class: 'logintext' });
+    const draw = () => {
+      const err = h('p', { class: 'err-text', role: 'alert' });
+      head.replaceChildren(h('h1', null, TITLES[mode][0]), h('p', null, TITLES[mode][1]));
+      const others = ['key', 'totp', 'recovery'].filter((m) => m !== mode && methods.includes(m) && (m !== 'key' || canKey))
+        .map((m) => h('button', { type: 'button', class: 'linkbtn', onClick: () => { mode = m; draw(); } }, LINKS[m]));
+      const foot = h('div', { class: 'loginlinks' }, others, h('button', { type: 'button', class: 'linkbtn', onClick: showLogin }, 'Start over'));
+      if (mode === 'key') {
+        const btn = h('button', { type: 'button', class: 'btn primary' }, 'Use security key');
+        const go = async () => {
+          err.textContent = '';
+          btn.disabled = true;
+          try {
+            const opts = await api('POST', '/auth/login/key/begin', { ticket });
+            const cred = await webauthnGet(opts);
+            await api('POST', '/auth/login/key/finish?ticket=' + encodeURIComponent(ticket), cred);
+            await signedIn(password);
+          } catch (x) { err.textContent = keyError(x); btn.disabled = false; }
+        };
+        btn.addEventListener('click', go);
+        box.replaceChildren(err, btn, foot);
+        btn.focus();
+        return;
+      }
+      const code = h('input', { id: 'mc', autocomplete: 'one-time-code', autocapitalize: 'none', required: true,
+        inputMode: mode === 'totp' ? 'numeric' : 'text', class: 'mono codeinput', placeholder: mode === 'totp' ? '123 456' : 'XXXX-XXXX' });
+      const btn = h('button', { type: 'submit', class: 'btn primary' }, 'Verify');
+      box.replaceChildren(h('form', { class: 'loginform', onSubmit: async (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        btn.disabled = true;
+        try {
+          await api('POST', '/auth/login/' + mode, { ticket, code: code.value });
+          await signedIn(password);
+        } catch (x) {
+          err.textContent = x.message;
+          btn.disabled = false;
+          code.select();
+        }
+      } }, h('div', { class: 'field' }, h('label', { htmlFor: 'mc', class: 'sr' }, TITLES[mode][0]), code), err, btn), foot);
+      code.focus();
+    };
+    app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' }, brand(72), head, box)));
+    draw();
+  }
+
+  // showMFASetup is the screen for a user who must set up two-step sign-in
+  // before doing anything else.
+  async function showMFASetup() {
+    cleanups.forEach((f) => f());
+    cleanups = [];
+    main = null;
+    let st = { keysAvailable: false };
+    try { st = await api('GET', '/auth/mfa'); } catch { /* offer the app only */ }
+    const done = async () => { me = await api('GET', '/auth/me'); render(); };
+    const keys = st.keysAvailable && window.PublicKeyCredential;
+    app.replaceChildren(h('div', { class: 'loginpage' }, h('div', { class: 'loginbox' },
+      brand(72),
+      h('div', { class: 'logintext' },
+        h('h1', null, 'Set up two-step sign-in'),
+        h('p', null, 'This server asks for a second step after the password. Add one to continue.')),
+      h('div', { class: 'loginform' },
+        h('button', { type: 'button', class: 'btn primary', onClick: () => addTOTP(done) }, 'Use an authenticator app'),
+        keys ? h('button', { type: 'button', class: 'btn altbtn', onClick: () => addKey(false, done) }, 'Use a security key') : null,
+        keys ? h('button', { type: 'button', class: 'btn altbtn', onClick: () => addKey(true, done) }, 'Use a passkey') : null,
+        h('div', { class: 'loginlinks' }, h('button', { type: 'button', class: 'linkbtn', onClick: logout }, 'Sign out'))))));
+  }
+
+  // recoveryDialog shows new recovery codes once.
+  function recoveryDialog(codes, onClose) {
+    const text = codes.join('\n');
+    const d = dialog((close) => h('div', { class: 'dlg' },
+      h('h2', null, 'Your recovery codes'),
+      h('p', null, 'If you lose your phone or key, each of these signs you in once. Store them somewhere safe, such as your password manager. They are not shown again.'),
+      h('pre', { class: 'code codes' }, text),
+      h('div', { class: 'actions' },
+        h('button', { type: 'button', class: 'btn', onClick: () => copy(text) }, 'Copy'),
+        h('button', { type: 'button', class: 'btn', onClick: () => download(APP.toLowerCase() + '-recovery-codes.txt', text + '\n') }, 'Download')),
+      h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'Done'))));
+    if (onClose) d.addEventListener('close', onClose);
+  }
+
+  // afterAdd shows recovery codes when the method was the first one.
+  const afterAdd = (res, onDone) => {
+    if (res.recoveryCodes && res.recoveryCodes.length) recoveryDialog(res.recoveryCodes, onDone);
+    else if (onDone) onDone();
+  };
+
+  async function addTOTP(onDone) {
+    let s;
+    try { s = await api('POST', '/auth/mfa/totp/setup'); } catch (x) { toast(x.message, true); return; }
+    const code = h('input', { id: 'tc', class: 'mono', autocomplete: 'one-time-code', inputMode: 'numeric', placeholder: '123 456', required: true });
+    const e = h('p', { class: 'err-text', role: 'alert' });
+    dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+      ev.preventDefault();
+      e.textContent = '';
+      try {
+        const res = await api('POST', '/auth/mfa/totp/confirm', { code: code.value });
+        close();
+        toast('Authenticator app turned on');
+        afterAdd(res, onDone);
+      } catch (x) { e.textContent = x.message; code.select(); }
+    } },
+    h('h2', null, 'Add an authenticator app'),
+    h('div', { class: 'qrrow' },
+      h('img', { class: 'qr', src: s.qr, alt: 'QR code for the authenticator app' }),
+      h('div', { class: 'col' },
+        h('p', null, 'Scan the code with your authenticator app, for example 1Password, Google Authenticator or Authy. Or enter this key by hand:'),
+        h('code', { class: 'mono secret' }, s.secret.match(/.{1,4}/g).join(' ')),
+        h('div', null, h('button', { type: 'button', class: 'btn small', onClick: () => copy(s.secret) }, 'Copy key')))),
+    h('div', { class: 'field' }, h('label', { htmlFor: 'tc' }, 'Code from the app'), code),
+    e,
+    h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Turn on'))));
+    code.focus();
+  }
+
+  // addKey adds a security key, or with passkey a passkey that also signs
+  // in without a password.
+  function addKey(passkey, onDone) {
+    const nm = h('input', { id: 'kn', value: passkey ? 'Passkey' : 'YubiKey', autocomplete: 'off', maxLength: 64 });
+    const e = h('p', { class: 'err-text', role: 'alert' });
+    const btn = h('button', { type: 'submit', class: 'btn primary' }, passkey ? 'Add passkey' : 'Add security key');
+    dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+      ev.preventDefault();
+      e.textContent = '';
+      btn.disabled = true;
+      try {
+        const opts = await api('POST', '/auth/mfa/keys/begin', { passkey });
+        const cred = await webauthnCreate(opts);
+        const res = await api('POST', '/auth/mfa/keys/finish?name=' + encodeURIComponent(nm.value.trim()), cred);
+        close();
+        toast((passkey ? 'Passkey' : 'Security key') + ' added');
+        afterAdd(res, onDone);
+      } catch (x) { e.textContent = keyError(x); btn.disabled = false; }
+    } },
+    h('h2', null, passkey ? 'Add a passkey' : 'Add a security key'),
+    h('p', null, passkey
+      ? 'A passkey signs you in on its own, without username and password. It can live in your password manager, on this device (Touch ID, Face ID, Windows Hello) or on a YubiKey.'
+      : 'A YubiKey or other FIDO2 key, asked for after your password. Have it ready: your browser asks you to insert and touch it.'),
+    h('div', { class: 'field' }, h('label', { htmlFor: 'kn' }, 'Name'), nm, h('span', { class: 'hint' }, 'So you can tell your keys apart')),
+    e,
+    h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), btn)));
+    nm.select();
+  }
+
+  // mfaCard is the "Two-step sign-in" section of My account.
+  function mfaCard() {
+    const body = h('div', null, h('p', { class: 'muted' }, 'Loading…'));
+    const card = h('section', { class: 'card', 'aria-labelledby': 'mfa' },
+      h('h2', { id: 'mfa' }, 'Two-step sign-in'),
+      h('p', { class: 'lead' }, 'Asks for a second proof after your password. App tokens, like the iOS app\'s, are not affected.'),
+      body);
+    const draw = async () => {
+      let s;
+      try { s = await api('GET', '/auth/mfa'); } catch (x) { body.replaceChildren(h('p', { class: 'err-text' }, x.message)); return; }
+      const keys = s.keysAvailable && window.PublicKeyCredential;
+      const removeKey = async (k) => {
+        if (!await confirmDialog({ title: 'Remove ' + k.name + '?', text: 'It can no longer be used to sign in.', ok: 'Remove', danger: true })) return;
+        try { await api('DELETE', '/auth/mfa/keys/' + k.id); toast('Removed ' + k.name); draw(); } catch (x) { toast(x.message, true); }
+      };
+      const renameKey = (k) => {
+        const nm = h('input', { id: 'rk', value: k.name, maxLength: 64, required: true });
+        const e = h('p', { class: 'err-text', role: 'alert' });
+        dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
+          ev.preventDefault();
+          try { await api('PATCH', '/auth/mfa/keys/' + k.id, { name: nm.value.trim() }); close(); draw(); } catch (x) { e.textContent = x.message; }
+        } }, h('h2', null, 'Rename key'), h('div', { class: 'field' }, h('label', { htmlFor: 'rk' }, 'Name'), nm), e,
+        h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
+        nm.select();
+      };
+      const removeTOTP = async () => {
+        if (!await confirmDialog({ title: 'Remove the authenticator app?', text: 'Its codes stop working for this account.', ok: 'Remove', danger: true })) return;
+        try { await api('DELETE', '/auth/mfa/totp'); toast('Authenticator app removed'); draw(); } catch (x) { toast(x.message, true); }
+      };
+      const newCodes = async () => {
+        if (!await confirmDialog({ title: 'Make new recovery codes?', text: 'Your old codes stop working.', ok: 'Make new codes' })) return;
+        try { recoveryDialog((await api('POST', '/auth/mfa/recovery-codes')).recoveryCodes, draw); } catch (x) { toast(x.message, true); }
+      };
+      const rows = [];
+      if (s.totp) {
+        rows.push(h('div', { class: 'mfarow' }, h('div', { class: 'grow' }, h('strong', null, 'Authenticator app'), h('div', { class: 'hint' }, 'Added ' + fmtDate(s.totpAdded))),
+          h('button', { type: 'button', class: 'btn danger small', onClick: removeTOTP }, 'Remove')));
+      }
+      for (const k of s.keys) {
+        rows.push(h('div', { class: 'mfarow' }, h('div', { class: 'grow' }, h('strong', null, k.name),
+          h('div', { class: 'hint' }, (k.passkey ? 'Passkey' : 'Security key') + ' · added ' + fmtDate(k.created) + ' · ' + (k.lastUsed ? 'last used ' + ago(k.lastUsed) : 'not used yet'))),
+        h('button', { type: 'button', class: 'btn small', onClick: () => renameKey(k) }, 'Rename'),
+        h('button', { type: 'button', class: 'btn danger small', onClick: () => removeKey(k) }, 'Remove')));
+      }
+      if (rows.length) {
+        rows.push(h('div', { class: 'mfarow' }, h('div', { class: 'grow' }, h('strong', null, 'Recovery codes'), h('div', { class: 'hint' }, s.recoveryLeft + ' of 10 left')),
+          h('button', { type: 'button', class: 'btn small', onClick: newCodes }, 'New codes')));
+      }
+      body.replaceChildren(...[
+        rows.length ? h('div', { class: 'mfalist' }, rows) : h('div', { class: 'notice' }, s.required ? 'Two-step sign-in is required on this server.' : 'Two-step sign-in is off for your account.'),
+        h('div', { class: 'actions section' },
+          s.totp ? null : h('button', { type: 'button', class: 'btn primary', onClick: () => addTOTP(draw) }, 'Add authenticator app'),
+          keys ? h('button', { type: 'button', class: 'btn', onClick: () => addKey(false, draw) }, 'Add security key') : null,
+          keys ? h('button', { type: 'button', class: 'btn', onClick: () => addKey(true, draw) }, 'Add passkey') : null),
+        keys ? null : h('p', { class: 'hint section' }, 'Security keys and passkeys need this site on its domain name with a trusted certificate (Let\'s Encrypt or certificate files).'),
+      ].filter(Boolean));
+    };
+    draw();
+    return card;
   }
 
   // showNewPassword is the screen after signing in with a temporary password
@@ -1407,6 +1716,8 @@
         pwErr,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Change password'))),
 
+      mfaCard(),
+
       h('section', { class: 'card flush', 'aria-labelledby': 'mytk' },
         h('div', { class: 'cardhead' },
           h('div', null, h('h2', { id: 'mytk' }, 'My app tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Tokens you created for the iOS app and scripts. All tokens are listed under Settings → API tokens.')),
@@ -1429,6 +1740,7 @@
     const drawUsers = (users) => userBody.replaceChildren(...users.map((u) => h('tr', null,
       h('td', null, h('strong', null, u.username), u.you ? h('span', { class: 'tag plain' }, 'You') : null, u.note ? h('div', { class: 'note' }, u.note) : null),
       h('td', null, u.mustChangePassword ? h('span', { class: 'badge warn' }, 'Must choose a password') : h('span', { class: 'muted' }, 'Active')),
+      h('td', null, mfaText(u.mfa) ? h('span', { class: 'badge' }, mfaText(u.mfa)) : h('span', { class: s.signin.requireMfa ? 'badge warn' : 'muted' }, 'Off')),
       h('td', null, u.lastLogin ? ago(u.lastLogin.at) + ' · ' + u.lastLogin.ip : h('span', { class: 'muted' }, 'Not since restart')),
       h('td', null, u.tokens ? String(u.tokens) : h('span', { class: 'muted' }, 'None')),
       h('td', null, fmtDate(u.created)),
@@ -1502,6 +1814,7 @@
       must.el,
       h('div', { class: 'actions' },
         h('button', { type: 'button', class: 'btn', onClick: () => { close(); resetUser(u); } }, 'Reset password…'),
+        mfaText(u.mfa) ? h('button', { type: 'button', class: 'btn', onClick: () => { close(); resetMFA(u); } }, 'Reset two-step sign-in…') : null,
         h('button', { type: 'button', class: 'btn danger', onClick: () => { close(); deleteUser(u); } }, 'Delete user…')),
       e,
       h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
@@ -1524,6 +1837,10 @@
       h('p', null, u.username + ' is signed out in every browser. Their app tokens keep working.'),
       pw.el, must.el, e,
       h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Reset password'))));
+    };
+    const resetMFA = async (u) => {
+      if (!await confirmDialog({ title: 'Reset two-step sign-in for ' + u.username + '?', text: 'Their authenticator app, security keys, passkeys and recovery codes are removed. They sign in with their password and can set it up again.', ok: 'Reset', danger: true })) return;
+      try { await api('POST', '/users/' + u.id + '/reset-mfa'); toast('Two-step sign-in reset for ' + u.username); reloadUsers(); } catch (x) { toast(x.message, true); }
     };
     const deleteUser = async (u) => {
       const tokens = u.tokens ? ' Their ' + (u.tokens === 1 ? 'app token is' : u.tokens + ' app tokens are') + ' revoked too.' : '';
@@ -1595,6 +1912,26 @@
     const levelSel = h('select', { id: 'lv', onChange: async (e) => {
       try { await api('PATCH', '/settings', { log: { ...s.log, level: e.target.value } }); s.log.level = e.target.value; toast('Log level: ' + e.target.value); } catch (x) { toast(x.message, true); }
     } }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l, selected: s.log.level === l }, l)));
+
+    // sign-in rules
+    const requireBox = h('input', { type: 'checkbox', id: 'rq', checked: s.signin.requireMfa, onChange: async (e) => {
+      const on = e.target.checked;
+      if (on) {
+        const mine = us.users.find((u) => u.you);
+        const without = us.users.filter((u) => !mfaText(u.mfa)).map((u) => u.username);
+        const text = 'Users without two-step sign-in must set it up right after their next sign-in, before they can do anything else. API tokens are not affected.' +
+          (without.length ? ' Not set up yet: ' + without.join(', ') + '.' : '') +
+          (mine && !mfaText(mine.mfa) ? ' That includes you: you are asked to set it up now.' : '');
+        if (!await confirmDialog({ title: 'Require two-step sign-in?', text, ok: 'Require it' })) { e.target.checked = false; return; }
+      }
+      try {
+        await api('PATCH', '/settings', { signin: { ...s.signin, requireMfa: on } });
+        s.signin.requireMfa = on;
+        toast(on ? 'Two-step sign-in required' : 'Two-step sign-in optional');
+        me = await api('GET', '/auth/me');
+        if (me.mfaSetupRequired) showMFASetup(); else reloadUsers();
+      } catch (x) { e.target.checked = !on; toast(x.message, true); }
+    } });
 
     // decoy
     const decoyPages = [['nginx', 'nginx welcome page'], ['apache', 'Apache "It works!" page'], ['soon', '"Coming soon" page'], ['blank', 'Blank page'], ['forbidden', '"Forbidden" page'], ['private', '"Private server" page']];
@@ -1675,8 +2012,14 @@
           h('div', null, h('h2', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
           h('button', { type: 'button', class: 'btn primary', onClick: addUser }, 'Add user')),
         h('div', { class: 'tbl' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', null, 'User'), h('th', null, 'Status'), h('th', null, 'Last sign-in'), h('th', null, 'App tokens'), h('th', null, 'Created'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          h('thead', null, h('tr', null, h('th', null, 'User'), h('th', null, 'Status'), h('th', null, 'Two-step'), h('th', null, 'Last sign-in'), h('th', null, 'App tokens'), h('th', null, 'Created'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
           userBody))),
+
+      h('section', { class: 'card', 'aria-labelledby': 'sgn' },
+        h('h2', { id: 'sgn' }, 'Sign-in'),
+        h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app, security keys such as a YubiKey, or passkeys. Changes apply immediately.'),
+        h('label', { class: 'check' }, requireBox, h('span', null, 'Require two-step sign-in for everyone', h('br'),
+          h('span', { class: 'hint' }, 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.')))),
 
       h('form', { class: 'card', onSubmit: saveWeb, 'aria-labelledby': 'web' },
         h('h2', { id: 'web' }, 'Web interface'),
