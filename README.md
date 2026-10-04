@@ -52,7 +52,8 @@ dependencies on the server: the binary installs, updates and removes itself.
   `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, and can write only to
   `/opt/ghostwire`.
 - **Sign-in:** one or more users, all admins. Passwords are stored as argon2id hashes.
-  After 5 failed attempts, sign-in is locked for 15 minutes. Sessions use an
+  After 5 failed attempts from one IP address, sign-in from it is locked for 15
+  minutes; wrong two-step codes count too. Sessions use an
   HttpOnly, SameSite=Strict cookie and last 12 hours by default.
 - **Two-step sign-in:** each user can add an authenticator app (TOTP) and
   passkeys under My account. A passkey signs in on its own, without username
@@ -216,7 +217,7 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 | File | Content |
 |---|---|
 | `GHOSTWIRE` | the program |
-| `config.json` | all settings, server key, peers, token hashes (0600) |
+| `config.json` | all settings, server key, peers, pending setup links with their PINs, user password hashes, authenticator app secrets, passkeys, recovery code and token hashes (0600) |
 | `stats.json` | traffic and connection history per peer |
 | `geo-country.mmdb`, `geo-asn.mmdb` | DB-IP Lite databases for country and network lookups |
 | `GHOSTWIRE.jsonl` | log, one JSON object per line. Changes carry `"audit":true` |
@@ -226,7 +227,8 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 
 Base path `/api/v1`. The web interface signs in with a session cookie; every
 user is an admin. Apps and scripts use `Authorization: Bearer <token>`; create
-the token under Settings → Pair iOS app. A token belongs to the user who made
+the token under Settings → Pair iOS app, or in the iOS app under Settings →
+Access → API tokens. A token belongs to the user who made
 it and is revoked when that user is deleted. A read-only token may only use
 GET. Full-access tokens can do everything the web interface does except backup
 and restore. Users, passwords and API tokens need a full-access token even for
@@ -295,7 +297,8 @@ override a drop in another table, so if ufw or firewalld is active, allow UDP
 
 The native iPhone app (SwiftUI, iOS 17+) lives in its own project,
 GHOSTWIRE-Companion. It does everything the web interface does except
-password, API tokens and backups. Pair it in the web interface under
+backup and restore, and adding an authenticator app or passkeys for two-step
+sign-in. Pair it in the web interface under
 Settings → Pair iOS app: scan the QR code, or tap "Copy pairing code" and paste
 it into the app's "Enter manually". Self-signed certificates are pinned during
 pairing.
