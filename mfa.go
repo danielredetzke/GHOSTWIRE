@@ -24,9 +24,10 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
-// Two-step sign-in for the web interface: an authenticator app (TOTP),
-// security keys such as a YubiKey and passkeys (both WebAuthn), plus
-// one-time recovery codes. API tokens never need a second step.
+// Two-step sign-in for the web interface: an authenticator app (TOTP) and
+// passkeys (WebAuthn, also on a YubiKey), plus one-time recovery codes. A
+// passkey signs in on its own and also serves as the second step after a
+// password. API tokens never need a second step.
 //
 // After a correct password, a user with two-step sign-in gets a short-lived
 // ticket instead of a session; the ticket and a code or key turn into the
@@ -41,7 +42,8 @@ type UserMFA struct {
 	Handle        []byte     `json:"handle,omitempty"`        // WebAuthn user handle
 }
 
-// MFAKey is a security key or passkey.
+// MFAKey is a passkey. Keys added by v0.3.0 as plain security keys have
+// Passkey false; they still work as the second step.
 type MFAKey struct {
 	ID         string              `json:"id"`
 	Name       string              `json:"name"`
@@ -166,7 +168,7 @@ func (w waUser) WebAuthnCredentials() []webauthn.Credential {
 	return out
 }
 
-// keysAvailable reports whether security keys and passkeys can work on this
+// keysAvailable reports whether passkeys can work on this
 // address: WebAuthn needs a domain name (not an IP address) and a
 // certificate the browser trusts, or localhost.
 func (a *App) keysAvailable(r *http.Request) bool {
@@ -179,7 +181,7 @@ func (a *App) keysAvailable(r *http.Request) bool {
 
 func (a *App) webAuthn(r *http.Request) (*webauthn.WebAuthn, error) {
 	if !a.keysAvailable(r) {
-		return nil, badRequest("security keys and passkeys need a domain name with a trusted certificate")
+		return nil, badRequest("passkeys need a domain name with a trusted certificate")
 	}
 	scheme := "https"
 	if r.TLS == nil && hostOnly(r.Host) == "localhost" {
@@ -198,7 +200,7 @@ type ticket struct {
 	ip      string
 	expires time.Time
 	fails   int
-	key     *webauthn.SessionData // a security key challenge, once asked for
+	key     *webauthn.SessionData // a passkey challenge, once asked for
 }
 
 type ceremony struct {
@@ -430,7 +432,7 @@ func (a *App) loginRecovery(w http.ResponseWriter, r *http.Request) {
 	a.signedIn(w, r, u, "recovery code")
 }
 
-// loginKeyBegin asks for one of the user's security keys or passkeys.
+// loginKeyBegin asks for one of the user's passkeys, as the second step.
 func (a *App) loginKeyBegin(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Ticket string }
 	if err := readJSON(r, &in); err != nil {
@@ -448,7 +450,7 @@ func (a *App) loginKeyBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u.MFA == nil || len(u.MFA.Keys) == 0 {
-		writeErr(w, badRequest("no security key is set up"))
+		writeErr(w, badRequest("no passkey is set up"))
 		return
 	}
 	opts, data, err := wa.BeginLogin(waUser{u}, webauthn.WithUserVerification(protocol.VerificationDiscouraged))
@@ -488,13 +490,13 @@ func (a *App) loginKeyFinish(w http.ResponseWriter, r *http.Request) {
 	cred, err := wa.FinishLogin(waUser{u}, *data, r)
 	if err != nil {
 		a.auth.ticketFailed(id, ip)
-		slog.Warn("login failed", "user", u.Username, "remote", ip, "reason", "security key: "+err.Error())
-		a.signInFailed(w, errors.New("the security key was not accepted"))
+		slog.Warn("login failed", "user", u.Username, "remote", ip, "reason", "passkey: "+err.Error())
+		a.signInFailed(w, errors.New("the passkey was not accepted"))
 		return
 	}
 	a.keyUsed(u.ID, cred)
 	a.auth.dropTicket(id)
-	a.signedIn(w, r, u, "security key")
+	a.signedIn(w, r, u, "passkey")
 }
 
 // keyUsed stores the key's new signature counter and when it was used.
@@ -710,13 +712,8 @@ func (a *App) totpRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// keyBegin starts adding a security key ({"passkey": false}) or a passkey.
+// keyBegin starts adding a passkey.
 func (a *App) keyBegin(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Passkey bool }
-	if err := readJSON(r, &in); err != nil {
-		writeErr(w, err)
-		return
-	}
 	wa, err := a.webAuthn(r)
 	if err != nil {
 		writeErr(w, err)
@@ -748,17 +745,14 @@ func (a *App) keyBegin(w http.ResponseWriter, r *http.Request) {
 	for _, k := range u.MFA.Keys {
 		exclude = append(exclude, k.Credential.Descriptor())
 	}
-	sel := protocol.AuthenticatorSelection{ResidentKey: protocol.ResidentKeyRequirementDiscouraged, UserVerification: protocol.VerificationDiscouraged}
-	if in.Passkey {
-		sel = protocol.AuthenticatorSelection{ResidentKey: protocol.ResidentKeyRequirementRequired, UserVerification: protocol.VerificationRequired}
-	}
+	sel := protocol.AuthenticatorSelection{ResidentKey: protocol.ResidentKeyRequirementRequired, UserVerification: protocol.VerificationRequired}
 	opts, data, err := wa.BeginRegistration(waUser{u}, webauthn.WithAuthenticatorSelection(sel), webauthn.WithExclusions(exclude))
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	a.auth.mu.Lock()
-	a.auth.mfa.enrolls[p.UserID] = &ceremony{userID: p.UserID, passkey: in.Passkey, data: data, expires: time.Now().Add(ticketTTL)}
+	a.auth.mfa.enrolls[p.UserID] = &ceremony{userID: p.UserID, passkey: true, data: data, expires: time.Now().Add(ticketTTL)}
 	a.auth.mu.Unlock()
 	writeJSON(w, http.StatusOK, opts)
 }
@@ -792,7 +786,7 @@ func (a *App) keyFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if name == "" {
-		name = map[bool]string{false: "Security key", true: "Passkey"}[cer.passkey]
+		name = "Passkey"
 	}
 	if len(name) > maxKeyName {
 		name = name[:maxKeyName]
@@ -811,7 +805,7 @@ func (a *App) keyFinish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	a.audit(r, map[bool]string{false: "security key added", true: "passkey added"}[cer.passkey], "key", name)
+	a.audit(r, "passkey added", "key", name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recoveryCodes": codes})
 }
 
@@ -865,7 +859,7 @@ func (a *App) keyRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	a.audit(r, "security key removed", "key", name)
+	a.audit(r, "passkey removed", "key", name)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

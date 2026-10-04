@@ -706,7 +706,7 @@
   function keyError(x) {
     if (x && x.name === 'NotAllowedError') return 'Cancelled or timed out. Try again.';
     if (x && x.name === 'InvalidStateError') return 'This key is already set up for your account.';
-    if (x && x.name === 'SecurityError') return 'Security keys need this site on its domain name with a trusted certificate.';
+    if (x && x.name === 'SecurityError') return 'Passkeys need this site on its domain name with a trusted certificate.';
     return x.message;
   }
 
@@ -720,11 +720,11 @@
     let mode = canKey ? 'key' : methods.includes('totp') ? 'totp' : 'recovery';
     const box = h('div', { class: 'loginform' });
     const TITLES = {
-      key: ['Use your security key', 'Insert your key and touch it, or use the passkey on this device.'],
+      key: ['Use your passkey', 'Confirm with Touch ID, Face ID, Windows Hello or your password manager, or insert your YubiKey and touch it.'],
       totp: ['Enter the code', 'The 6-digit code from your authenticator app.'],
       recovery: ['Use a recovery code', 'One of the codes you saved when you set up two-step sign-in. Each works once.'],
     };
-    const LINKS = { key: 'Use a security key instead', totp: 'Use an authenticator code instead', recovery: 'Use a recovery code' };
+    const LINKS = { key: 'Use a passkey instead', totp: 'Use an authenticator code instead', recovery: 'Use a recovery code' };
     const head = h('div', { class: 'logintext' });
     const draw = () => {
       const err = h('p', { class: 'err-text', role: 'alert' });
@@ -733,7 +733,7 @@
         .map((m) => h('button', { type: 'button', class: 'linkbtn', onClick: () => { mode = m; draw(); } }, LINKS[m]));
       const foot = h('div', { class: 'loginlinks' }, others, h('button', { type: 'button', class: 'linkbtn', onClick: showLogin }, 'Start over'));
       if (mode === 'key') {
-        const btn = h('button', { type: 'button', class: 'btn primary' }, 'Use security key');
+        const btn = h('button', { type: 'button', class: 'btn primary' }, 'Use passkey');
         const go = async () => {
           err.textContent = '';
           btn.disabled = true;
@@ -788,8 +788,7 @@
         h('p', null, 'This server asks for a second step after the password. Add one to continue.')),
       h('div', { class: 'loginform' },
         h('button', { type: 'button', class: 'btn primary', onClick: () => addTOTP(done) }, 'Use an authenticator app'),
-        keys ? h('button', { type: 'button', class: 'btn altbtn', onClick: () => addKey(false, done) }, 'Use a security key') : null,
-        keys ? h('button', { type: 'button', class: 'btn altbtn', onClick: () => addKey(true, done) }, 'Use a passkey') : null,
+        keys ? h('button', { type: 'button', class: 'btn altbtn', onClick: () => addPasskey(done) }, 'Use a passkey') : null,
         h('div', { class: 'loginlinks' }, h('button', { type: 'button', class: 'linkbtn', onClick: logout }, 'Sign out'))))));
   }
 
@@ -841,30 +840,28 @@
     code.focus();
   }
 
-  // addKey adds a security key, or with passkey a passkey that also signs
-  // in without a password.
-  function addKey(passkey, onDone) {
-    const nm = h('input', { id: 'kn', value: passkey ? 'Passkey' : 'YubiKey', autocomplete: 'off', maxLength: 64 });
+  // addPasskey adds a passkey. It signs in on its own, and also serves as
+  // the second step after a password.
+  function addPasskey(onDone) {
+    const nm = h('input', { id: 'kn', value: 'Passkey', autocomplete: 'off', maxLength: 64 });
     const e = h('p', { class: 'err-text', role: 'alert' });
-    const btn = h('button', { type: 'submit', class: 'btn primary' }, passkey ? 'Add passkey' : 'Add security key');
+    const btn = h('button', { type: 'submit', class: 'btn primary' }, 'Add passkey');
     dialog((close) => h('form', { class: 'dlg', onSubmit: async (ev) => {
       ev.preventDefault();
       e.textContent = '';
       btn.disabled = true;
       try {
-        const opts = await api('POST', '/auth/mfa/keys/begin', { passkey });
+        const opts = await api('POST', '/auth/mfa/keys/begin');
         const cred = await webauthnCreate(opts);
         const res = await api('POST', '/auth/mfa/keys/finish?name=' + encodeURIComponent(nm.value.trim()), cred);
         close();
-        toast((passkey ? 'Passkey' : 'Security key') + ' added');
+        toast('Passkey added');
         afterAdd(res, onDone);
       } catch (x) { e.textContent = keyError(x); btn.disabled = false; }
     } },
-    h('h2', null, passkey ? 'Add a passkey' : 'Add a security key'),
-    h('p', null, passkey
-      ? 'A passkey signs you in on its own, without username and password. It can live in your password manager, on this device (Touch ID, Face ID, Windows Hello) or on a YubiKey.'
-      : 'A YubiKey or other FIDO2 key, asked for after your password. Have it ready: your browser asks you to insert and touch it.'),
-    h('div', { class: 'field' }, h('label', { htmlFor: 'kn' }, 'Name'), nm, h('span', { class: 'hint' }, 'So you can tell your keys apart')),
+    h('h2', null, 'Add a passkey'),
+    h('p', null, 'A passkey signs you in on its own, without username and password, and also works as the second step after your password. It can live on this device (Touch ID, Face ID, Windows Hello), in your password manager, or on a YubiKey with a PIN set.'),
+    h('div', { class: 'field' }, h('label', { htmlFor: 'kn' }, 'Name'), nm, h('span', { class: 'hint' }, 'So you can tell your passkeys apart, for example "MacBook" or "YubiKey"')),
     e,
     h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), btn)));
     nm.select();
@@ -922,9 +919,8 @@
         rows.length ? h('div', { class: 'mfalist' }, rows) : h('div', { class: 'notice' }, s.required ? 'Two-step sign-in is required on this server.' : 'Two-step sign-in is off for your account.'),
         h('div', { class: 'actions section' },
           s.totp ? null : h('button', { type: 'button', class: 'btn primary', onClick: () => addTOTP(draw) }, 'Add authenticator app'),
-          keys ? h('button', { type: 'button', class: 'btn', onClick: () => addKey(false, draw) }, 'Add security key') : null,
-          keys ? h('button', { type: 'button', class: 'btn', onClick: () => addKey(true, draw) }, 'Add passkey') : null),
-        keys ? null : h('p', { class: 'hint section' }, 'Security keys and passkeys need this site on its domain name with a trusted certificate (Let\'s Encrypt or certificate files).'),
+          keys ? h('button', { type: 'button', class: 'btn', onClick: () => addPasskey(draw) }, 'Add passkey') : null),
+        keys ? null : h('p', { class: 'hint section' }, 'Passkeys need this site on its domain name with a trusted certificate (Let\'s Encrypt or certificate files).'),
       ].filter(Boolean));
     };
     draw();
@@ -1839,7 +1835,7 @@
       h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn', onClick: close }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Reset password'))));
     };
     const resetMFA = async (u) => {
-      if (!await confirmDialog({ title: 'Reset two-step sign-in for ' + u.username + '?', text: 'Their authenticator app, security keys, passkeys and recovery codes are removed. They sign in with their password and can set it up again.', ok: 'Reset', danger: true })) return;
+      if (!await confirmDialog({ title: 'Reset two-step sign-in for ' + u.username + '?', text: 'Their authenticator app, passkeys and recovery codes are removed. They sign in with their password and can set it up again.', ok: 'Reset', danger: true })) return;
       try { await api('POST', '/users/' + u.id + '/reset-mfa'); toast('Two-step sign-in reset for ' + u.username); reloadUsers(); } catch (x) { toast(x.message, true); }
     };
     const deleteUser = async (u) => {
@@ -2017,7 +2013,7 @@
 
       h('section', { class: 'card', 'aria-labelledby': 'sgn' },
         h('h2', { id: 'sgn' }, 'Sign-in'),
-        h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app, security keys such as a YubiKey, or passkeys. Changes apply immediately.'),
+        h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app or passkeys, including on a YubiKey. Changes apply immediately.'),
         h('label', { class: 'check' }, requireBox, h('span', null, 'Require two-step sign-in for everyone', h('br'),
           h('span', { class: 'hint' }, 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.')))),
 

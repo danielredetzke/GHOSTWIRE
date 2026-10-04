@@ -1050,7 +1050,7 @@ func TestMFA(t *testing.T) {
 	if o := adm("GET", "/auth/options", nil, 200); o["passkeys"] != false {
 		t.Fatalf("passkeys offered on an IP address: %v", o)
 	}
-	adm("POST", "/auth/mfa/keys/begin", map[string]bool{"passkey": true}, 400)
+	adm("POST", "/auth/mfa/keys/begin", nil, 400)
 
 	// Turn on the authenticator app; the first method brings recovery codes.
 	setup := adm("POST", "/auth/mfa/totp/setup", nil, 200)

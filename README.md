@@ -67,14 +67,16 @@ The screenshots show sample data from the built-in simulator.
 - **Sign-in:** one or more users, all admins. Passwords are stored as argon2id hashes.
   After 5 failed attempts, sign-in is locked for 15 minutes. Sessions use an
   HttpOnly, SameSite=Strict cookie and last 12 hours by default.
-- **Two-step sign-in:** each user can add an authenticator app (TOTP), security
-  keys such as a YubiKey, and passkeys that sign in without a password, under
-  My account. Turning it on gives 10 one-time recovery codes. An admin can
-  require it for everyone (Settings → Sign-in) and reset it for a user who lost
-  their phone or key. Security keys and passkeys use WebAuthn and need the
-  server's domain name with a trusted certificate (Let's Encrypt, certificate
-  files, or a reverse proxy); on a self-signed certificate or an IP address,
-  only the authenticator app is offered. API tokens never need a second step.
+- **Two-step sign-in:** each user can add an authenticator app (TOTP) and
+  passkeys under My account. A passkey signs in on its own, without username
+  and password, and also works as the second step after a password. It can live
+  on the device (Touch ID, Face ID, Windows Hello), in a password manager, or on
+  a YubiKey with a PIN set. Turning it on gives 10 one-time recovery codes. An
+  admin can require it for everyone (Settings → Sign-in) and reset it for a user
+  who lost their phone or key. Passkeys use WebAuthn and need the server's
+  domain name with a trusted certificate (Let's Encrypt, certificate files, or a
+  reverse proxy); on a self-signed certificate or an IP address, only the
+  authenticator app is offered. API tokens never need a second step.
 - **API tokens** are stored only as hashes and can be read-only or full access.
 - `config.json` holds the server private key and is readable only by the
   service (0600).
@@ -262,7 +264,7 @@ POST   /auth/login/totp · /auth/login/recovery {"ticket", "code"}
 POST   /auth/login/key/begin {"ticket"} · /auth/login/key/finish?ticket=  (body: the WebAuthn credential)
 POST   /auth/login/passkey/begin · /auth/login/passkey/finish?id=
 signed in: GET /auth/mfa · POST /auth/mfa/totp/setup · /auth/mfa/totp/confirm · DELETE /auth/mfa/totp
-signed in: POST /auth/mfa/keys/begin {"passkey"} · /auth/mfa/keys/finish?name= · PATCH|DELETE /auth/mfa/keys/{id}
+signed in: POST /auth/mfa/keys/begin · /auth/mfa/keys/finish?name= · PATCH|DELETE /auth/mfa/keys/{id}
 signed in: POST /auth/mfa/recovery-codes
 GET    /status                           GET /stats?range=24h|7d|30d|90d
 GET    /server         PATCH /server     POST /server/rotate-key     GET /server/detect-ip
