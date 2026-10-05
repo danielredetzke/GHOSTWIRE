@@ -1036,6 +1036,19 @@
       const failing = st.checks.filter((c) => !c.ok);
       const ifCheck = st.checks.find((c) => c.name === 'WireGuard interface');
       const top = [...peers].sort((a, b) => (b.stats.down24h + b.stats.up24h) - (a.stats.down24h + a.stats.up24h)).slice(0, 6);
+      // A range switch fetches and redraws only the chart.
+      const traffic = h('div', null, chart(stats.points, range, 'total', true));
+      const pills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Time range' });
+      const drawPills = () => pills.replaceChildren(...RANGES.map(([k, t]) =>
+        h('button', { type: 'button', class: range === k ? 'pill on' : 'pill', 'aria-pressed': String(range === k), onClick: async () => {
+          range = k;
+          drawPills();
+          try {
+            const s = await api('GET', '/stats?range=' + k);
+            if (range === k) traffic.replaceChildren(chart(s.points, k, 'total', true));
+          } catch (x) { toast(x.message, true); }
+        } }, t)));
+      drawPills();
 
       fill(wrap,
         h('div', { class: 'head' },
@@ -1066,10 +1079,8 @@
             h('div', { class: 's' }, 'Service up ' + ago(st.started).replace(' ago', '') + ' · ' + (st.healthy ? 'all checks pass' : failing.length + ' check(s) failing')))),
 
         h('section', { class: 'card', 'aria-labelledby': 'tput' },
-          h('div', { class: 'cardhead' }, h('h2', { id: 'tput' }, 'Traffic, all peers'),
-            h('div', { class: 'pills', role: 'group', 'aria-label': 'Time range' }, RANGES.map(([k, t]) =>
-              h('button', { type: 'button', class: range === k ? 'pill on' : 'pill', 'aria-pressed': String(range === k), onClick: () => { range = k; draw().catch(() => {}); } }, t)))),
-          chart(stats.points, range, 'total', true)),
+          h('div', { class: 'cardhead' }, h('h2', { id: 'tput' }, 'Traffic, all peers'), pills),
+          traffic),
 
         h('div', { class: 'cols' },
           h('section', { class: 'card flush' },
