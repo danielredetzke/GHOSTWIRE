@@ -224,6 +224,10 @@ func run(configPath string) error {
 	app := &App{
 		store: store, kernel: kernel, recon: recon, stats: stats, speeds: speeds, auth: auth, tls: webTLS,
 		logPath: logPath, logw: logw, geo: geo, updates: newUpdater(cfg.Updates), started: time.Now(), shutdown: shutdown,
+		webAddrs: []string{cfg.Web.Listen},
+	}
+	if cfg.Web.HTTPListen != "" && cfg.Web.TLS.Mode != "off" {
+		app.webAddrs = append(app.webAddrs, cfg.Web.HTTPListen)
 	}
 
 	var wg sync.WaitGroup

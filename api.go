@@ -3,15 +3,18 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -29,7 +32,8 @@ type App struct {
 	geo      *Geo            // nil in tests
 	updates  *Updater        // nil in tests
 	started  time.Time
-	shutdown func() // graceful stop; systemd restarts the service
+	shutdown func()   // graceful stop; systemd restarts the service
+	webAddrs []string // the addresses the web server listens on now
 }
 
 // --- helpers ---
@@ -1090,11 +1094,15 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(w)
 			return string(b)
 		}
-		before := listen()
+		before, oldWeb := listen(), c.Web
 		if err := field(m, "web", &c.Web); err != nil {
 			return err
 		}
-		restart = listen() != before
+		if restart = listen() != before; restart {
+			if err := a.checkWebStart(oldWeb, c.Web); err != nil {
+				return err
+			}
+		}
 		if err := field(m, "stats", &c.Stats); err != nil {
 			return err
 		}
@@ -1236,12 +1244,74 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, badRequest("this file has no server key; is it a backup of this app?"))
 		return
 	}
-	if err := a.store.Update(func(c *Config) error { *c = in; return nil }); err != nil {
+	if in.Version > configVersion {
+		writeErr(w, badRequest("this backup is from a newer version of %s; update this server first", appName))
+		return
+	}
+	in.applyDefaults()
+	if !in.passwordSet() {
+		writeErr(w, badRequest("this backup has no user with a password; restoring it would lock everyone out"))
+		return
+	}
+	if err := a.store.Update(func(c *Config) error {
+		old := c.Web
+		*c = in
+		return a.checkWebStart(old, c.Web)
+	}); err != nil {
 		writeErr(w, err)
 		return
 	}
 	a.audit(r, "backup restored", "peers", len(in.Peers))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applyError": a.apply(), "restartRequired": true})
+}
+
+// checkWebStart refuses web settings the service could not start with: an
+// address it cannot listen on, or certificate files it cannot read. The
+// service would stop at the next restart, and the web interface and the API
+// with it.
+func (a *App) checkWebStart(old, next WebConfig) error {
+	if err := validateListen(next.Listen, "listen address", false); err != nil {
+		return &userError{err.Error()}
+	}
+	if err := validateListen(next.HTTPListen, "HTTP listen address", true); err != nil {
+		return &userError{err.Error()}
+	}
+	if next.TLS.Mode == "files" && next.TLS != old.TLS {
+		if _, err := tls.LoadX509KeyPair(next.TLS.CertFile, next.TLS.KeyFile); err != nil {
+			return badRequest("the certificate files cannot be used: %v", err)
+		}
+	}
+	addrs := []string{next.Listen}
+	if next.HTTPListen != "" && next.TLS.Mode != "off" {
+		addrs = append(addrs, next.HTTPListen)
+	}
+	for _, addr := range addrs {
+		if err := a.canListen(addr); err != nil {
+			return badRequest("cannot listen on %s: %v", addr, err)
+		}
+	}
+	return nil
+}
+
+// canListen tries to listen on addr. An address the service listens on now,
+// or one whose port it holds, is fine: it is free again after the restart.
+func (a *App) canListen(addr string) error {
+	if slices.Contains(a.webAddrs, addr) {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln.Close()
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		_, port, _ := net.SplitHostPort(addr)
+		for _, own := range a.webAddrs {
+			if _, p, _ := net.SplitHostPort(own); p == port {
+				return nil
+			}
+		}
+	}
+	return err
 }
 
 // applyRuntime applies the settings that take effect without a restart: log

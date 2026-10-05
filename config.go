@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -76,7 +77,28 @@ const (
 	minLogFiles, maxLogFiles     = 1, 100
 	minHourlyHours, maxHourlyHrs = 24, 24 * 31
 	minDailyDays, maxDailyDays   = 7, 3660
+	minSessionHours              = 1
+	maxSessionHours              = 30 * 24
 )
+
+// validateListen checks a listen address like ":443" or "192.0.2.1:443".
+// Empty is allowed when optional (the HTTP listener is then off).
+func validateListen(addr, field string, optional bool) error {
+	if addr == "" && optional {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s %q must look like :443 or 192.0.2.1:443", field, addr)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%s %q: the port must be 1–65535", field, addr)
+	}
+	if host != "" && host != "localhost" && checkEndpoint(host) != nil {
+		return fmt.Errorf("%s %q: %q is not an IP address or host name", field, addr, host)
+	}
+	return nil
+}
 
 type WebConfig struct {
 	Listen       string    `json:"listen"`     // HTTPS (or HTTP when tls.mode is "off") listen address
@@ -364,7 +386,9 @@ func (c *Config) validate() error {
 	if v6.Masked() != v6 {
 		return fmt.Errorf("IPv6 network must be the network address, e.g. %s", v6.Masked())
 	}
-	if s.Endpoint != "" && strings.ContainsAny(s.Endpoint, " /:") && net.ParseIP(s.Endpoint) == nil {
+	// The endpoint is written into client configs as is, so it must be a
+	// plain host name or IP: anything else could add lines to them.
+	if s.Endpoint != "" && checkEndpoint(s.Endpoint) != nil {
 		return errors.New("endpoint must be a host name or IP address without port")
 	}
 	if err := validateHostList(s.ClientDefaults.DNS, "DNS", false); err != nil {
@@ -396,6 +420,15 @@ func (c *Config) validate() error {
 	}
 	if _, ok := updateSources[c.Updates.Source]; !ok {
 		return fmt.Errorf("update source must be gitea or github")
+	}
+	if err := validateListen(c.Web.Listen, "listen address", false); err != nil {
+		return err
+	}
+	if err := validateListen(c.Web.HTTPListen, "HTTP listen address", true); err != nil {
+		return err
+	}
+	if h := c.Web.SessionHours; h < minSessionHours || h > maxSessionHours {
+		return fmt.Errorf("session length must be %d–%d hours", minSessionHours, maxSessionHours)
 	}
 	switch c.Web.TLS.Mode {
 	case "acme":
@@ -585,6 +618,12 @@ func (s *Store) Update(fn func(c *Config) error) error {
 	if err := next.validate(); err != nil {
 		s.mu.Unlock()
 		return &userError{err.Error()}
+	}
+	// With no user left (applyDefaults then adds an "admin" without a
+	// password), nobody could sign in until someone ran "passwd" on the server.
+	if old.passwordSet() && !next.passwordSet() {
+		s.mu.Unlock()
+		return &userError{"this would leave no user with a password, and nobody could sign in"}
 	}
 	if err := writeFileAtomic(s.path, next, 0o600); err != nil {
 		s.mu.Unlock()

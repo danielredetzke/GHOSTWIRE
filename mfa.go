@@ -217,6 +217,7 @@ type ticket struct {
 
 type ceremony struct {
 	userID  string // "" for a passkey sign-in
+	ip      string // lockKey of who started a passkey sign-in
 	data    *webauthn.SessionData
 	expires time.Time
 }
@@ -551,10 +552,50 @@ func (a *App) loginPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := randomString(24)
+	ip := remoteIP(r)
 	a.auth.mu.Lock()
-	a.auth.mfa.logins[id] = &ceremony{data: data, expires: time.Now().Add(ticketTTL)}
+	ok := a.auth.addPasskeyLoginLocked(id, &ceremony{data: data, ip: lockKey(ip), expires: time.Now().Add(ticketTTL)})
 	a.auth.mu.Unlock()
+	if !ok {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": errBusy.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "options": opts})
+}
+
+// Anyone can start a passkey sign-in, so the pending ones are capped: per
+// address, and in total, where the oldest makes room.
+const (
+	maxPasskeyLogins      = 1000
+	maxPasskeyLoginsPerIP = 10
+)
+
+// addPasskeyLoginLocked stores a started passkey sign-in, or reports false
+// when its address has too many pending. a.mu must be held.
+func (a *Auth) addPasskeyLoginLocked(id string, c *ceremony) bool {
+	now := time.Now()
+	var fromIP int
+	var oldestID string
+	for k, x := range a.mfa.logins {
+		if now.After(x.expires) {
+			delete(a.mfa.logins, k)
+			continue
+		}
+		if x.ip == c.ip {
+			fromIP++
+		}
+		if oldestID == "" || x.expires.Before(a.mfa.logins[oldestID].expires) {
+			oldestID = k
+		}
+	}
+	if fromIP >= maxPasskeyLoginsPerIP {
+		return false
+	}
+	if len(a.mfa.logins) >= maxPasskeyLogins {
+		delete(a.mfa.logins, oldestID)
+	}
+	a.mfa.logins[id] = c
+	return true
 }
 
 func (a *App) loginPasskeyFinish(w http.ResponseWriter, r *http.Request) {

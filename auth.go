@@ -287,9 +287,14 @@ func remoteIP(r *http.Request) string {
 		host = r.RemoteAddr
 	}
 	// Behind a local reverse proxy the real client is in X-Forwarded-For.
+	// The proxy appends the address it saw, so only the last entry counts:
+	// earlier ones come from the client and can be anything.
 	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+			list := strings.Split(xff[len(xff)-1], ",")
+			if last := strings.TrimSpace(list[len(list)-1]); net.ParseIP(last) != nil {
+				return last
+			}
 		}
 	}
 	return host

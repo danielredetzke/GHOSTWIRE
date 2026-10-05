@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,28 @@ type Kernel interface {
 	Close() error
 }
 
+// lanBlock picks, from the networks on the uplinks, the ones peers must not
+// reach while LAN access is off: private IPv4 networks, and IPv6 networks
+// except link-local, since a home LAN uses global IPv6 addresses. IPv6
+// prefixes shorter than /48 are left out: they are no LAN.
+func lanBlock(nets []netip.Prefix) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range nets {
+		a := p.Addr().Unmap()
+		p = netip.PrefixFrom(a, min(p.Bits(), a.BitLen())).Masked()
+		switch {
+		case a.Is4() && !a.IsPrivate():
+			continue
+		case a.Is6() && (a.IsLinkLocalUnicast() || a.IsLoopback() || p.Bits() < 48):
+			continue
+		}
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // readSysctl returns the trimmed content of a /proc/sys file, or "".
 func readSysctl(path string) string {
 	b, err := os.ReadFile(path)
@@ -55,6 +78,10 @@ type Reconciler struct {
 	kernel  Kernel
 	store   *Store
 	trigger chan struct{}
+
+	// applyMu runs one apply at a time. Each reads the config once it holds
+	// the lock, so the last apply always uses the newest config.
+	applyMu sync.Mutex
 
 	mu        sync.Mutex
 	lastErr   error
@@ -76,6 +103,8 @@ func (r *Reconciler) Kick() {
 // ApplyNow applies synchronously and returns the result, so an API call can
 // report kernel errors to the user.
 func (r *Reconciler) ApplyNow() error {
+	r.applyMu.Lock()
+	defer r.applyMu.Unlock()
 	err := r.kernel.Apply(r.store.Get())
 	r.mu.Lock()
 	r.lastErr, r.lastApply = err, time.Now()

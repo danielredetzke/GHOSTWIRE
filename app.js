@@ -1988,7 +1988,7 @@
           fieldEl('up6', 'IPv6 uplink interface', h('input', { id: 'up6', class: 'mono', value: draft.uplinkV6, placeholder: 'auto: ' + (srv.detectedUplinkV6 || 'none found'), onInput: str('uplinkV6') })),
           cb('nat', 'Masquerade (NAT) peer traffic to the internet'),
           cb('peerToPeer', 'Allow peers to reach each other'),
-          cb('lanAccess', 'Allow peers to reach the server\'s LAN', 'Private networks on the uplink interface'),
+          cb('lanAccess', 'Allow peers to reach the server\'s LAN', 'Private IPv4 and the IPv6 networks on the uplink interface'),
           cb('openPort', 'Accept UDP ' + draft.listenPort + ' in the input chain'))),
 
       h('section', { class: 'card', 'aria-labelledby': 'ky' },

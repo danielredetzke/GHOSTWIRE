@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -79,11 +80,34 @@ func TestValidate(t *testing.T) {
 		"bad port":        func(c *Config) { c.Server.ListenPort = 70000 },
 		"unmasked net":    func(c *Config) { c.Server.IPv4 = "10.84.12.5/24" },
 		"update source":   func(c *Config) { c.Updates.Source = "sourceforge" },
+		// The endpoint goes into client configs: no extra lines.
+		"endpoint newline": func(c *Config) { c.Server.Endpoint = "vpn.example.net\n[Interface]\nPreUp=id;#" },
+		"endpoint tab":     func(c *Config) { c.Server.Endpoint = "vpn.example.net\tx" },
+		"endpoint port":    func(c *Config) { c.Server.Endpoint = "vpn.example.net:51820" },
+		"listen":           func(c *Config) { c.Web.Listen = "not-an-address" },
+		"listen port":      func(c *Config) { c.Web.Listen = ":70000" },
+		"http listen":      func(c *Config) { c.Web.HTTPListen = "80" },
+		"session hours":    func(c *Config) { c.Web.SessionHours = -1 },
+		"session too long": func(c *Config) { c.Web.SessionHours = 100000 },
 	} {
 		cc := c.clone()
 		mutate(cc)
 		if err := cc.validate(); err == nil {
 			t.Errorf("%s: expected an error", name)
+		}
+	}
+	for _, ep := range []string{"vpn.example.net", "203.0.113.7", "2001:db8::1"} {
+		cc := c.clone()
+		cc.Server.Endpoint = ep
+		if err := cc.validate(); err != nil {
+			t.Errorf("endpoint %q rejected: %v", ep, err)
+		}
+	}
+	for _, l := range []string{":443", "0.0.0.0:8443", "[::]:443", "localhost:8080"} {
+		cc := c.clone()
+		cc.Web.Listen = l
+		if err := cc.validate(); err != nil {
+			t.Errorf("listen %q rejected: %v", l, err)
 		}
 	}
 }
@@ -1337,5 +1361,249 @@ func TestSpeeds(t *testing.T) {
 	}
 	if n := len(sp.Since(0)); n != speedPoints {
 		t.Fatalf("kept %d points, want %d", n, speedPoints)
+	}
+}
+
+// signedInApp starts the API with a signed-in admin and returns the app
+// and a call function.
+func signedInApp(t *testing.T) (*App, func(method, path string, body any, want int) map[string]any) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error { c.Users[0].PasswordHash = hash; return nil })
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	t.Cleanup(srv.Close)
+	jar, _ := cookiejar.New(nil)
+	cl := &http.Client{Jar: jar}
+	call := func(method, path string, body any, want int) map[string]any {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, srv.URL+"/api/v1"+path, rd)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status %d, want %d: %v", method, path, resp.StatusCode, want, out)
+		}
+		return out
+	}
+	call("POST", "/auth/login", map[string]string{"username": "admin", "password": "a long test password"}, 200)
+	return app, call
+}
+
+// Web settings the service could not start with are refused before they
+// are saved: a restart would otherwise take the web interface and the API
+// down for good.
+func TestWebSettingsCheck(t *testing.T) {
+	app, call := signedInApp(t)
+	web := func(change func(w *WebConfig)) map[string]any {
+		w := app.store.Get().Web
+		w.HTTPListen = ""
+		change(&w)
+		return map[string]any{"web": w}
+	}
+	call("PATCH", "/settings", web(func(w *WebConfig) { w.Listen = "not-an-address" }), 400)
+	call("PATCH", "/settings", web(func(w *WebConfig) { w.SessionHours = -1 }), 400)
+	call("PATCH", "/settings", web(func(w *WebConfig) {
+		w.TLS = TLSConfig{Mode: "files", CertFile: "/nonexistent/cert.pem", KeyFile: "/nonexistent/key.pem"}
+	}), 400)
+
+	// A port another program holds is refused; a free one is saved.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	call("PATCH", "/settings", web(func(w *WebConfig) { w.Listen = busy.Addr().String() }), 400)
+	free, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := free.Addr().String()
+	free.Close()
+	call("PATCH", "/settings", web(func(w *WebConfig) { w.Listen = addr; w.TLS = TLSConfig{Mode: "off"} }), 200)
+	if app.store.Get().Web.Listen != addr {
+		t.Fatal("valid listen address not saved")
+	}
+
+	// The address the service listens on now is in use by itself: fine.
+	app.webAddrs = []string{busy.Addr().String()}
+	call("PATCH", "/settings", web(func(w *WebConfig) { w.Listen = busy.Addr().String() }), 200)
+
+	// Restore runs the same check.
+	backup := app.store.Get()
+	backup.Web.Listen = "not-an-address"
+	call("POST", "/restore", backup, 400)
+}
+
+func TestRemoteIP(t *testing.T) {
+	for _, c := range []struct {
+		remote string
+		xff    []string
+		want   string
+	}{
+		{"203.0.113.5:1234", nil, "203.0.113.5"},
+		{"203.0.113.5:1234", []string{"198.51.100.1"}, "203.0.113.5"}, // not from a local proxy
+		{"127.0.0.1:1234", []string{"198.51.100.1"}, "198.51.100.1"},
+		// The client sent its own header; the proxy appended the real address.
+		{"127.0.0.1:1234", []string{"1.2.3.4, 198.51.100.1"}, "198.51.100.1"},
+		{"127.0.0.1:1234", []string{"1.2.3.4", "198.51.100.1"}, "198.51.100.1"},
+		{"127.0.0.1:1234", []string{"garbage"}, "127.0.0.1"},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		for _, v := range c.xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := remoteIP(r); got != c.want {
+			t.Errorf("%s %v: got %s, want %s", c.remote, c.xff, got, c.want)
+		}
+	}
+}
+
+// Anyone can start a passkey sign-in, so pending ones are capped per
+// address and in total.
+func TestPasskeyLoginCap(t *testing.T) {
+	a := newAuth(nil)
+	start := func(id, ip string, expires time.Time) bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.addPasskeyLoginLocked(id, &ceremony{ip: lockKey(ip), expires: expires})
+	}
+	later := time.Now().Add(ticketTTL)
+	for i := range maxPasskeyLoginsPerIP {
+		if !start(fmt.Sprint("a", i), "198.51.100.1", later) {
+			t.Fatalf("sign-in %d refused", i)
+		}
+	}
+	if start("a-more", "198.51.100.1", later) {
+		t.Fatal("too many sign-ins from one address accepted")
+	}
+	if !start("b0", "198.51.100.2", later) {
+		t.Fatal("another address refused")
+	}
+	// Expired ones make room again.
+	a.mfa.logins = map[string]*ceremony{}
+	start("old", "198.51.100.3", time.Now().Add(-time.Second))
+	if !start("new", "198.51.100.3", later) || len(a.mfa.logins) != 1 {
+		t.Fatalf("expired sign-in not dropped: %d pending", len(a.mfa.logins))
+	}
+	// In total, the oldest makes room.
+	a.mfa.logins = map[string]*ceremony{}
+	for i := range maxPasskeyLogins {
+		start(fmt.Sprint("c", i), fmt.Sprintf("10.0.%d.%d", i/250, i%250), later.Add(time.Duration(i)*time.Millisecond))
+	}
+	start("last", "192.0.2.1", later.Add(time.Hour))
+	if _, ok := a.mfa.logins["c0"]; ok || len(a.mfa.logins) != maxPasskeyLogins {
+		t.Fatalf("cap not kept: %d pending, oldest kept %v", len(a.mfa.logins), ok)
+	}
+}
+
+func TestLanBlock(t *testing.T) {
+	got := lanBlock([]netip.Prefix{
+		netip.MustParsePrefix("192.168.1.20/24"),
+		netip.MustParsePrefix("203.0.113.9/24"), // public IPv4: not a LAN
+		netip.MustParsePrefix("2001:db8:1:2::20/64"),
+		netip.MustParsePrefix("fd00:1:2:3::20/64"),
+		netip.MustParsePrefix("fe80::1/64"),
+		netip.MustParsePrefix("2001:db8::1/32"),  // no LAN
+		netip.MustParsePrefix("192.168.1.30/24"), // same network twice
+	})
+	want := []netip.Prefix{
+		netip.MustParsePrefix("192.168.1.0/24"),
+		netip.MustParsePrefix("2001:db8:1:2::/64"),
+		netip.MustParsePrefix("fd00:1:2:3::/64"),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A change that would leave no user with a password is refused: restoring
+// a backup without users, or the last users deleting each other.
+func TestNoUserLeftWithPassword(t *testing.T) {
+	app, call := signedInApp(t)
+	if err := app.store.Update(func(c *Config) error { c.Users = nil; return nil }); err == nil {
+		t.Fatal("removing every user was accepted")
+	}
+	if !app.store.Get().passwordSet() {
+		t.Fatal("password lost")
+	}
+
+	backup := app.store.Get()
+	backup.Users, backup.APITokens = nil, nil
+	call("POST", "/restore", backup, 400)
+	backup = app.store.Get()
+	backup.Version = configVersion + 1
+	call("POST", "/restore", backup, 400)
+	call("POST", "/restore", app.store.Get(), 200)
+	if !app.store.Get().passwordSet() {
+		t.Fatal("password lost")
+	}
+}
+
+// slowKernel records the configs it applied; the first apply takes a while.
+type slowKernel struct {
+	fakeKernel
+	mu      sync.Mutex
+	calls   int
+	applied []string // peer names, per apply
+}
+
+func (k *slowKernel) Apply(c *Config) error {
+	k.mu.Lock()
+	k.calls++
+	first := k.calls == 1
+	k.mu.Unlock()
+	if first {
+		time.Sleep(200 * time.Millisecond)
+	}
+	var names []string
+	for _, p := range c.Peers {
+		names = append(names, p.Name)
+	}
+	k.mu.Lock()
+	k.applied = append(k.applied, strings.Join(names, ","))
+	k.mu.Unlock()
+	return nil
+}
+
+// Applies run one at a time, so a slow apply of an older config cannot
+// finish after the newest one and undo it in the kernel.
+func TestApplyOrder(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := &slowKernel{}
+	r := newReconciler(k, store)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = r.ApplyNow() }() // the old config, slowly
+	time.Sleep(50 * time.Millisecond)
+	if err := store.Update(func(c *Config) error {
+		c.Peers = append(c.Peers, Peer{ID: newID(), Name: "phone", IPv4: serverIPv4(netip.MustParsePrefix(c.Server.IPv4)).Next().String()})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ApplyNow()
+	wg.Wait()
+	if last := k.applied[len(k.applied)-1]; last != "phone" {
+		t.Fatalf("the kernel ended with %q, not the newest config; applies: %q", last, k.applied)
 	}
 }

@@ -217,7 +217,8 @@ func (k *linuxKernel) Apply(c *Config) error {
 	if c.Server.IPv6Enabled {
 		_ = os.WriteFile("/proc/sys/net/ipv6/conf/all/forwarding", []byte("1"), 0o644)
 	}
-	return applyFirewall(c, k.Uplink(c, false), k.Uplink(c, true), lanNetworks(k.Uplink(c, false)))
+	up4, up6 := k.Uplink(c, false), k.Uplink(c, true)
+	return applyFirewall(c, up4, up6, lanNetworks(up4, up6))
 }
 
 func (k *linuxKernel) Sample(iface string) ([]PeerSample, error) {
@@ -264,27 +265,27 @@ func (k *linuxKernel) Uplink(c *Config, v6 bool) string {
 	return l.Attrs().Name
 }
 
-// lanNetworks returns the private IPv4 networks on the uplink, used to block
-// peers from the server's LAN when LAN access is off.
-func lanNetworks(uplink string) []netip.Prefix {
-	if uplink == "" {
-		return nil
-	}
-	l, err := netlink.LinkByName(uplink)
-	if err != nil {
-		return nil
-	}
-	addrs, _ := netlink.AddrList(l, netlink.FAMILY_V4)
-	var out []netip.Prefix
-	for _, a := range addrs {
-		if !a.IP.IsPrivate() {
+// lanNetworks returns the LAN networks on the IPv4 and IPv6 uplinks (see
+// lanBlock), used to block peers from the server's LAN when LAN access is off.
+func lanNetworks(uplinks ...string) []netip.Prefix {
+	var nets []netip.Prefix
+	for i, uplink := range uplinks {
+		if uplink == "" || slices.Contains(uplinks[:i], uplink) {
 			continue
 		}
-		ones, _ := a.Mask.Size()
-		ip, _ := netip.AddrFromSlice(a.IP.To4())
-		out = append(out, netip.PrefixFrom(ip, ones).Masked())
+		l, err := netlink.LinkByName(uplink)
+		if err != nil {
+			continue
+		}
+		addrs, _ := netlink.AddrList(l, netlink.FAMILY_ALL)
+		for _, a := range addrs {
+			ones, _ := a.Mask.Size()
+			if ip, ok := netip.AddrFromSlice(a.IP); ok {
+				nets = append(nets, netip.PrefixFrom(ip.Unmap(), ones))
+			}
+		}
 	}
-	return out
+	return lanBlock(nets)
 }
 
 // publicAddr reports the uplink's address for the health check: the first
