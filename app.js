@@ -384,8 +384,8 @@
   function pointLabel(t, range) {
     const d = new Date(t * 1000);
     if (range === '24h') {
-      const hrs = Math.round((Date.now() - d.getTime()) / 3600000);
-      return hrs <= 0 ? 'This hour' : hrs + ' h ago';
+      const hm = (x) => x.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      return hm(d) + '–' + hm(new Date(d.getTime() + 3600000));
     }
     return d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
   }
@@ -430,9 +430,35 @@
         h('div', { class: 'gl top' }), h('div', { class: 'gl mid' }), h('div', { class: 'gl base' }),
         h('div', { class: 'yl top' }, fmtBytes(top)), h('div', { class: 'yl mid' }, fmtBytes(top / 2)),
         bars),
-      h('div', { class: 'xaxis' },
-        h('span', null, pointLabel(points[0].t, range)),
-        h('span', null, range === '24h' ? 'now' : pointLabel(points[points.length - 1].t, range))));
+      timeAxis(points.map((p) => p.t), range === '24h' ? 3600 : 86400));
+  }
+
+  // timeAxis labels the bottom of a chart with clock times or dates. Points
+  // are evenly spaced buckets of step seconds. Hourly buckets get the hour
+  // they start at, every 3 hours (6 on narrow screens), with the date at
+  // midnight; daily buckets get the date under the bar, every bar for a
+  // week and every 7th bar, counted back from today, for a month.
+  function timeAxis(ts, step) {
+    const n = ts.length;
+    const ticks = [];
+    if (step < 86400) {
+      for (let i = 0; i < n; i++) {
+        const d = new Date(ts[i] * 1000);
+        if (d.getMinutes() !== 0 || d.getHours() % 3 !== 0 || i === 0) continue;
+        const text = d.getHours() === 0
+          ? d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })
+          : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        ticks.push({ at: i / n, text, minor: d.getHours() % 6 !== 0, edge: true });
+      }
+    } else {
+      const every = n > 10 ? 7 : 1;
+      for (let i = n - 1; i >= 0; i -= every) {
+        const d = new Date(ts[i] * 1000);
+        ticks.push({ at: (i + 0.5) / n, text: d.toLocaleDateString(undefined, n > 10 ? { day: 'numeric', month: 'short' } : { weekday: 'short', day: 'numeric' }) });
+      }
+    }
+    return h('div', { class: 'xaxis', 'aria-hidden': 'true' },
+      ticks.map((k) => h('span', { class: (k.minor ? 'minor' : '') + (k.edge ? ' edge' : ''), style: { left: (k.at * 100).toFixed(3) + '%' } }, k.text)));
   }
 
   // latencyChart draws the median as a line over a min–max band, one point
@@ -489,7 +515,7 @@
         h('div', { class: 'gl top' }), h('div', { class: 'gl mid' }), h('div', { class: 'gl base' }),
         h('div', { class: 'yl top' }, fmtMs(top)), h('div', { class: 'yl mid' }, fmtMs(top / 2)),
         wrapEl),
-      h('div', { class: 'xaxis' }, h('span', null, '24 h ago'), h('span', null, '12 h ago'), h('span', null, 'now')));
+      timeAxis(points.map((p) => p.t), 300));
   }
 
   // pairDialog creates an API token and shows it once, with the pairing QR
