@@ -49,6 +49,7 @@
     settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
+    log: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
     logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
   };
 
@@ -528,7 +529,7 @@
 
   // ---------- shell, router ----------
 
-  const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/settings', 'settings', 'Settings']];
+  const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/log', 'log', 'Log'], ['#/settings', 'settings', 'Settings']];
   let navLinks = {};
   let srvBox, peerCount, verRow;
 
@@ -594,7 +595,8 @@
     [/^#\/peers\/new$/, '#/peers', viewPeerNew],
     [/^#\/peers\/([\w-]+)$/, '#/peers', viewPeer],
     [/^#\/server$/, '#/server', viewServer],
-    [/^#\/settings(#updates)?$/, '#/settings', viewSettings],
+    [/^#\/log$/, '#/log', viewLog],
+    [/^#\/settings(#\w+)?$/, '#/settings', viewSettings],
     [/^#\/account$/, '#/account', viewAccount],
   ];
 
@@ -1049,7 +1051,7 @@
                 h('td', { class: 'num' }, fmtBytes(p.stats.up24h)))))))
               : h('p', { class: 'empty' }, 'No peers yet. ', h('a', { href: '#/peers/new' }, 'Add the first one'))),
           logs ? h('section', { class: 'card' },
-            h('div', { class: 'cardhead' }, h('h2', null, 'Recent activity'), h('a', { href: '#/settings' }, 'Log')),
+            h('div', { class: 'cardhead' }, h('h2', null, 'Recent activity'), h('a', { href: '#/log' }, 'Log')),
             logs.lines.length
               ? h('div', null, logs.lines.map((l) => h('div', { class: 'ev' }, h('time', { datetime: l.time }, fmtWhen(l.time)), h('span', null, describeAudit(l)))))
               : h('p', { class: 'empty' }, 'No changes yet.')) : null));
@@ -1707,6 +1709,36 @@
       bar);
   }
 
+  // ---------- log ----------
+
+  async function viewLog(wrap) {
+    const s = await api('GET', '/settings');
+    let level = 'all';
+    const box = h('pre', { class: 'log tall', tabindex: '0', 'aria-label': 'Log lines, newest first' });
+    const pills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Level filter' });
+    let audit = false;
+    const draw = async () => {
+      pills.replaceChildren(...[['all', 'All'], ['info', 'Info'], ['warn', 'Warn'], ['error', 'Error']].map(([k, t]) =>
+        h('button', { type: 'button', class: level === k && !audit ? 'pill on' : 'pill', 'aria-pressed': String(level === k && !audit), onClick: () => { level = k; audit = false; draw(); } }, t)),
+        h('button', { type: 'button', class: audit ? 'pill on' : 'pill', 'aria-pressed': String(audit), onClick: () => { audit = true; draw(); } }, 'Changes only'));
+      try {
+        const r = await api('GET', '/logs?limit=500&level=' + level + (audit ? '&audit=1' : ''));
+        box.textContent = r.lines.length ? r.lines.map(fmtLogLine).join('\n') : 'No entries at this level.';
+      } catch (e) { box.textContent = e.message; }
+    };
+    fill(wrap,
+      h('div', { class: 'head' },
+        h('div', null, h('h1', null, 'Log'), h('p', { class: 'sub' }, h('span', { class: 'mono' }, s.logPath), ' · level ' + s.log.level + ' · rotates at ' + s.log.maxSizeMB + ' MB, keeps ' + s.log.maxFiles + ' files')),
+        h('div', { class: 'actions' },
+          h('a', { class: 'btn', href: '#/settings#logs' }, 'Log settings'),
+          h('a', { class: 'btn', href: '/api/v1/logs/download' }, 'Download log'))),
+      h('section', { class: 'card', 'aria-label': 'Log lines' },
+        h('div', { class: 'cardhead' }, h('span', { class: 'muted' }, 'Newest first · refreshes every 10 s'), pills),
+        h('div', { class: 'section' }, box)));
+    every(10000, draw);
+    await draw();
+  }
+
   // ---------- updates ----------
 
   const HIDE_UPDATE = 'GHOSTWIRE.hideUpdate';
@@ -1789,7 +1821,7 @@
       ].join('\n') : null;
       fill(card,
         h('div', { class: 'cardhead' },
-          h('h2', { id: 'upd' }, 'Updates'),
+          h('h3', { id: 'upd' }, 'Updates'),
           st.enabled ? h('span', { class: 'muted' }, st.checked ? 'Last checked ' + ago(st.checked) : 'Not checked yet') : null),
         h('div', { class: 'upvers' },
           h('div', { class: 'upbox' }, h('span', null, 'Running'), h('strong', { class: 'mono' }, cur)),
@@ -1933,7 +1965,6 @@
       return;
     }
     const [s, tk, us] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens'), api('GET', '/users')]);
-    let logLevelFilter = 'all';
 
     // users
     const userBody = h('tbody');
@@ -2098,20 +2129,13 @@
       try { await api('DELETE', '/tokens/' + t.id); toast('Revoked ' + t.name); reloadTokens(); } catch (e) { toast(e.message, true); }
     };
 
-    // logs
-    const logBox = h('pre', { class: 'log', tabindex: '0', 'aria-label': 'Log lines, newest first' });
-    const logPills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Level filter' });
-    const drawLogs = async () => {
-      logPills.replaceChildren(...[['all', 'All'], ['info', 'Info'], ['warn', 'Warn'], ['error', 'Error']].map(([k, t]) =>
-        h('button', { type: 'button', class: logLevelFilter === k ? 'pill on' : 'pill', 'aria-pressed': String(logLevelFilter === k), onClick: () => { logLevelFilter = k; drawLogs(); } }, t)));
-      try {
-        const r = await api('GET', '/logs?limit=200&level=' + logLevelFilter);
-        logBox.textContent = r.lines.length ? r.lines.map(fmtLogLine).join('\n') : 'No entries at this level.';
-      } catch (e) { logBox.textContent = e.message; }
-    };
-    const levelSel = h('select', { id: 'lv', onChange: async (e) => {
-      try { await api('PATCH', '/settings', { log: { ...s.log, level: e.target.value } }); s.log.level = e.target.value; toast('Log level: ' + e.target.value); } catch (x) { toast(x.message, true); }
-    } }, ['debug', 'info', 'warn', 'error'].map((l) => h('option', { value: l, selected: s.log.level === l }, l)));
+    const levelSel = h('select', { id: 'lv' }, [['debug', 'Debug: everything'], ['info', 'Info'], ['warn', 'Warnings and errors'], ['error', 'Errors only']].map(([l, t]) => h('option', { value: l, selected: s.log.level === l }, t)));
+    const sessSel = h('select', { id: 'st', onChange: async (e) => {
+      try { await api('PATCH', '/settings', { web: { ...s.web, sessionHours: Number(e.target.value) } }); s.web.sessionHours = Number(e.target.value); toast('Session length saved'); } catch (x) { toast(x.message, true); }
+    } }, [[1, '1 hour'], [12, '12 hours'], [24, '1 day'], [168, '7 days']].map(([v, t]) => h('option', { value: String(v), selected: s.web.sessionHours === v }, t)));
+    const geoBox = h('input', { type: 'checkbox', id: 'geo', checked: s.stats.geoip !== false, onChange: async (e) => {
+      try { await api('PATCH', '/settings', { stats: { ...s.stats, geoip: e.target.checked } }); toast(e.target.checked ? 'Country lookup on' : 'Country lookup off'); } catch (x) { e.target.checked = !e.target.checked; toast(x.message, true); }
+    } });
 
     // sign-in rules
     const requireBox = h('input', { type: 'checkbox', id: 'rq', checked: s.signin.requireMfa, onChange: async (e) => {
@@ -2161,7 +2185,6 @@
     const logFiles = h('input', { id: 'rf', type: 'number', min: '1', max: '100', value: s.log.maxFiles, inputMode: 'numeric' });
     const hourly = presetSelect('rh', s.stats.hourlyHours, [[24, '1 day'], [48, '2 days'], [168, '7 days'], [336, '14 days'], [744, '31 days']], 'hours');
     const daily = presetSelect('rd', s.stats.dailyDays, [[30, '30 days'], [90, '90 days'], [180, '6 months'], [400, '13 months'], [730, '2 years'], [1825, '5 years'], [3660, '10 years']], 'days');
-    const geo = h('input', { type: 'checkbox', checked: s.stats.geoip !== false });
     const geoStatus = s.geo && s.geo.updated ? 'Database from ' + fmtDate(s.geo.updated) + '.' : 'Not downloaded yet.';
     const diskHint = h('span', { class: 'hint' });
     const drawDiskHint = () => {
@@ -2180,10 +2203,10 @@
       if (shrinks && !await confirmDialog({ title: 'Delete older data?', text: 'The new limits are lower: older log files and traffic history beyond them are deleted. This cannot be undone.', ok: 'Save and delete', danger: true })) return;
       try {
         await api('PATCH', '/settings', {
-          log: { ...s.log, maxSizeMB: next.maxSizeMB, maxFiles: next.maxFiles },
-          stats: { hourlyHours: next.hourlyHours, dailyDays: next.dailyDays, geoip: geo.checked },
+          log: { ...s.log, level: levelSel.value, maxSizeMB: next.maxSizeMB, maxFiles: next.maxFiles },
+          stats: { ...s.stats, hourlyHours: next.hourlyHours, dailyDays: next.dailyDays },
         });
-        toast('Retention saved');
+        toast('Logs & history saved');
         render();
       } catch (x) { retErr.textContent = x.message; }
     };
@@ -2203,88 +2226,92 @@
       } catch (x) { toast(x.message, true); }
     } });
 
+    const groupHead = (id, title, text) => h('div', { class: 'group', id }, h('h2', null, title), h('p', null, text));
     fill(wrap,
-      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Users, web interface, API access for the iOS app, logs, data retention, backups and updates')),
+      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Who can sign in, the web interface, logs and history, updates and backups')),
       restartBox,
 
+      groupHead('g-access', 'Access', 'Who can sign in, and how.'),
       h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
         h('div', { class: 'cardhead' },
-          h('div', null, h('h2', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
+          h('div', null, h('h3', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
           h('button', { type: 'button', class: 'btn primary', onClick: addUser }, 'Add user')),
         h('div', { class: 'tbl' }, h('table', null,
           h('thead', null, h('tr', null, h('th', null, 'User'), h('th', null, 'Status'), h('th', null, 'Two-step'), h('th', null, 'Last sign-in'), h('th', null, 'App tokens'), h('th', null, 'Created'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
           userBody))),
 
       h('section', { class: 'card', 'aria-labelledby': 'sgn' },
-        h('h2', { id: 'sgn' }, 'Sign-in'),
-        h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app or passkeys, including on a YubiKey. Changes apply immediately.'),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'sgn' }, 'Sign-in'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app or passkeys, including on a YubiKey.'),
         h('label', { class: 'check' }, requireBox, h('span', null, 'Require two-step sign-in for everyone', h('br'),
-          h('span', { class: 'hint' }, 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.')))),
+          h('span', { class: 'hint' }, 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.'))),
+        h('div', { class: 'grid section' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'st' }, 'Stay signed in for'), sessSel, h('span', { class: 'hint' }, 'Applies to new sign-ins')),
+          h('div', { class: 'field' }), h('div', { class: 'field' }))),
 
+      h('section', { class: 'card', 'aria-labelledby': 'api' },
+        h('div', { class: 'cardhead' },
+          h('div', null, h('h3', { id: 'api' }, 'iOS app and API tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'For the iOS app and scripts. A token appears once when you create it, and only a hash is stored.')),
+          h('button', { type: 'button', class: 'btn primary', onClick: () => pairDialog(reloadTokens) }, 'Pair iOS app')),
+        h('div', { class: 'tbl section' }, h('table', { class: 'narrow' },
+          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Owner'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          tbody))),
+
+      groupHead('g-web', 'Web interface', 'Where this interface listens and what strangers see.'),
       h('form', { class: 'card', onSubmit: saveWeb, 'aria-labelledby': 'web' },
-        h('h2', { id: 'web' }, 'Web interface'),
-        h('p', { class: 'lead' }, 'Changes take effect after the service restarts.'),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'web' }, 'Address and HTTPS'), h('span', { class: 'saves' }, 'Save, then restart')),
+        h('p', { class: 'lead' }, 'Usually set once during install.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'la' }, 'Listen address'), h('input', { id: 'la', class: 'mono', value: web.listen, onInput: (e) => { web.listen = e.target.value.trim(); } })),
           h('div', { class: 'field' }, h('label', { htmlFor: 'hl' }, 'HTTP listen address'), h('input', { id: 'hl', class: 'mono', value: web.httpListen, placeholder: 'off', onInput: (e) => { web.httpListen = e.target.value.trim(); } }), h('span', { class: 'hint' }, 'Redirects to HTTPS and answers Let\'s Encrypt http-01 checks. Empty turns it off')),
           h('div', { class: 'field' }, h('label', { htmlFor: 'tls' }, 'HTTPS'), modeSel),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'st' }, 'Session length'), h('select', { id: 'st', onChange: (e) => { web.sessionHours = Number(e.target.value); } },
-            [[1, '1 hour'], [12, '12 hours'], [24, '1 day'], [168, '7 days']].map(([v, t]) => h('option', { value: String(v), selected: web.sessionHours === v }, t)))),
           s.fingerprint ? h('div', { class: 'field' }, h('label', { htmlFor: 'fp' }, 'Certificate fingerprint (SHA-256)'), h('input', { id: 'fp', class: 'mono', value: s.fingerprint, readOnly: true }), h('span', { class: 'hint' }, 'The iOS app pins this when pairing')) : null),
         h('div', { class: 'section' }, fAcme, fFiles),
         webErr,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
 
       h('section', { class: 'card', 'aria-labelledby': 'dcy' },
-        h('h2', { id: 'dcy' }, 'Decoy'),
-        h('p', { class: 'lead' }, 'Shows an ordinary web server page instead of this interface. The iOS app and setup links keep working. Changes apply immediately.'),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'dcy' }, 'Decoy'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('p', { class: 'lead' }, 'Shows an ordinary web server page instead of this interface. The iOS app and setup links keep working.'),
         h('label', { class: 'check' }, decoyBox, h('span', null, 'Decoy', h('br'),
           h('span', { class: 'hint' }, 'Hides the web interface. Turn it off again in the iOS app.'))),
         h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'dp' }, 'Decoy page'), decoySel))),
 
-      h('section', { class: 'card', 'aria-labelledby': 'api' },
-        h('div', { class: 'cardhead' },
-          h('div', null, h('h2', { id: 'api' }, 'API tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'For the iOS app and scripts. A token appears once when you create it, and only a hash is stored.')),
-          h('button', { type: 'button', class: 'btn primary', onClick: () => pairDialog(reloadTokens) }, 'Pair iOS app')),
-        h('div', { class: 'tbl section' }, h('table', { class: 'narrow' },
-          h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Owner'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
-          tbody))),
-
-      h('section', { class: 'card', 'aria-labelledby': 'lg' },
-        h('div', { class: 'cardhead' },
-          h('div', null, h('h2', { id: 'lg' }, 'Log'), h('p', { class: 'lead', style: { marginBottom: '0' } }, h('span', { class: 'mono' }, s.logPath), ' · rotates at ' + s.log.maxSizeMB + ' MB, keeps ' + s.log.maxFiles + ' files')),
-          logPills),
-        h('div', { class: 'section' }, logBox),
-        h('div', { class: 'grid section' },
-          h('div', { class: 'field' }, h('label', { htmlFor: 'lv' }, 'Log level'), levelSel),
-          h('div', { class: 'field', style: { justifyContent: 'flex-end' } }, h('a', { class: 'btn', href: '/api/v1/logs/download' }, 'Download log')))),
-
+      groupHead('logs', 'Logs & history', 'What the server records and for how long. The log itself is on the Log page.'),
       h('form', { class: 'card', onSubmit: saveRetention, 'aria-labelledby': 'ret' },
-        h('h2', { id: 'ret' }, 'Data retention'),
-        h('p', { class: 'lead' }, 'How much log and traffic history is kept. Changes apply immediately, without a restart.'),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'ret' }, 'Log and traffic history'), h('span', { class: 'saves' }, 'Save, no restart')),
+        h('p', { class: 'lead' }, 'Lower limits delete older data when you save. All-time totals are always kept.'),
         h('div', { class: 'grid' },
+          h('div', { class: 'field' }, h('label', { htmlFor: 'lv' }, 'Log level'), levelSel),
           h('div', { class: 'field' }, h('label', { htmlFor: 'rs' }, 'Log file size (MB)'), logSize, h('span', { class: 'hint' }, 'The log starts a new file at this size. 1–1000')),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'rf' }, 'Old log files kept'), logFiles, diskHint),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rf' }, 'Old log files kept'), logFiles, diskHint)),
+        h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'rh' }, 'Hourly traffic history'), hourly, h('span', { class: 'hint' }, 'Used by the 24-hour charts')),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts and the connection history. All-time totals are always kept'))),
-        h('label', { class: 'check section' }, geo, h('span', null, 'Show country and network of peer addresses', h('br'),
-          h('span', { class: 'hint' }, 'Downloads the free DB-IP Lite databases (about 20 MB) once a month and looks addresses up on this server only. ' + geoStatus))),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts and the connection history')),
+          h('div', { class: 'field' })),
         retErr,
-        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save retention'))),
+        h('div', { class: 'formfoot' }, h('a', { class: 'btn', href: '#/log' }, 'Open the log'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
+
+      h('section', { class: 'card', 'aria-labelledby': 'geo-h' },
+        h('div', { class: 'cardhead' }, h('h3', { id: 'geo-h' }, 'Country and network lookup'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('label', { class: 'check' }, geoBox, h('span', null, 'Show country and network of peer addresses', h('br'),
+          h('span', { class: 'hint' }, 'Downloads the free DB-IP Lite databases (about 20 MB) once a month and looks addresses up on this server only. ' + geoStatus)))),
+
+      groupHead('g-upkeep', 'Upkeep', 'New versions and copies of your settings.'),
+      updatesCard(s.updates),
 
       h('section', { class: 'card', 'aria-labelledby': 'bk' },
-        h('h2', { id: 'bk' }, 'Backup & restore'),
+        h('h3', { id: 'bk' }, 'Backup & restore'),
         h('p', { class: 'lead' }, 'A backup is a copy of config.json with server key, peers, tokens and settings. Keep it safe: it contains the server\'s private key.'),
         h('div', { class: 'actions' },
           h('a', { class: 'btn', href: '/api/v1/backup' }, 'Download backup'),
           h('button', { type: 'button', class: 'btn', onClick: () => restoreInput.click() }, 'Restore from file…'),
-          restoreInput)),
-
-      updatesCard(s.updates));
-    await drawLogs();
-    if (location.hash.endsWith('#updates')) document.getElementById('updates').scrollIntoView();
+          restoreInput)));
+    const jumpTo = location.hash.split('#')[2];
+    if (jumpTo) document.getElementById(jumpTo)?.scrollIntoView();
   }
+
 
   render();
 })();

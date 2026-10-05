@@ -27,16 +27,17 @@ dependencies on the server: the binary installs, updates and removes itself.
 - **IPv4 and IPv6:** IPv6 inside the tunnel is turned on automatically when the
   server has a global IPv6 address.
 - **Traffic history:** kept in `stats.json`, hourly for 48 h and daily for
-  400 days by default (Settings → Data retention).
+  400 days by default (Settings → Logs & history).
 - **Connection history:** every online session per peer, with start, duration,
   address and traffic. A new session starts when a device changes networks.
   Country and network operator come from the free
   [DB-IP Lite](https://db-ip.com) databases (CC BY 4.0). GHOSTWIRE downloads
   them monthly (about 20 MB) and looks addresses up locally, so peer addresses
-  never leave the server. You can switch this off under Settings → Data
-  retention.
+  never leave the server. You can switch this off under Settings → Logs &
+  history.
 - **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files
-  kept by default. Changes are marked as audit entries.
+  kept by default, and shown on the Log page. Changes are marked as audit
+  entries.
 - **Update notice:** once a day the server asks Gitea or GitHub (your choice
   under Settings → Updates) for the latest release. A newer one shows in the
   sidebar, on the Dashboard and in Settings, with its release notes and the

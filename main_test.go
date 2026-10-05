@@ -1195,6 +1195,17 @@ func TestMFA(t *testing.T) {
 	c3("POST", "/auth/login/recovery", map[string]string{"ticket": ticket, "code": codes[0].(string)}, 401)
 	c3("POST", "/auth/login/recovery", map[string]string{"ticket": ticket, "code": codes[1].(string)}, 200)
 
+	// Session length needs no restart; the listen address does.
+	web := store.Get().Web
+	web.SessionHours = 24
+	if r := adm("PATCH", "/settings", map[string]any{"web": web}, 200); r["restartRequired"] != false || store.Get().Web.SessionHours != 24 {
+		t.Fatalf("session length: %v", r)
+	}
+	web.Listen = "127.0.0.1:9443"
+	if r := adm("PATCH", "/settings", map[string]any{"web": web}, 200); r["restartRequired"] != true {
+		t.Fatalf("listen address: %v", r)
+	}
+
 	// Required for everyone: a user without it can only set it up.
 	adm("PATCH", "/settings", map[string]any{"signin": map[string]bool{"requireMfa": true}}, 200)
 	u := adm("POST", "/users", map[string]any{"username": "eve", "password": "eve's password 1", "mustChangePassword": false}, 201)["user"].(map[string]any)

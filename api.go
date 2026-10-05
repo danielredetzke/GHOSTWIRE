@@ -1022,12 +1022,19 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var restart bool
 	err = a.store.Update(func(c *Config) error {
-		before, _ := json.Marshal(c.Web)
+		// Session length applies to the next sign-in; everything else in
+		// web needs a restart.
+		listen := func() string {
+			w := c.Web
+			w.SessionHours = 0
+			b, _ := json.Marshal(w)
+			return string(b)
+		}
+		before := listen()
 		if err := field(m, "web", &c.Web); err != nil {
 			return err
 		}
-		after, _ := json.Marshal(c.Web)
-		restart = string(before) != string(after)
+		restart = listen() != before
 		if err := field(m, "stats", &c.Stats); err != nil {
 			return err
 		}
