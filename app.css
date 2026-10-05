@@ -387,7 +387,9 @@ pre.log.tall { max-height: calc(100vh - 260px); min-height: 420px; }
 .livenow .k { font-size: 13px; color: var(--ink-2); }
 .livenow .v { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .livenow .v small { font-size: 16px; color: var(--ink-3); font-weight: 500; margin-left: 6px; }
-.chart .larea { fill: var(--down); opacity: .15; }
+.chart .larea { opacity: .15; }
+.chart .larea.down { fill: var(--down); }
+.chart .larea.up { fill: var(--up); }
 .chart .ldown, .chart .lup { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .chart .ldown { stroke: var(--down); }
 .chart .lup { stroke: var(--up); }

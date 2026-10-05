@@ -1148,7 +1148,8 @@
 
   const calm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // liveChart draws download as a filled area and upload as a line. It is
+  // liveChart draws download and upload as lines over light, see-through
+  // areas, so neither looks less important where they overlap. It is
   // built once and updated in place: each new step enters just beyond the
   // right edge and the chart slides left by one step over the step's length,
   // so it moves steadily instead of jumping. Hover shows the values at a
@@ -1156,11 +1157,12 @@
   function liveChart() {
     const W = 1000, H = 100;
     let pts = [], size = 60, step = 2, off = 0, dx = W / 59, t0 = 0, moving = false;
-    const area = svg('path', { class: 'larea' });
+    const downArea = svg('path', { class: 'larea down' });
+    const upArea = svg('path', { class: 'larea up' });
     const down = svg('path', { class: 'ldown' });
     const up = svg('path', { class: 'lup' });
     const cursor = svg('line', { class: 'cursor', x1: 0, x2: 0, y1: 0, y2: H, visibility: 'hidden' });
-    const g = svg('g', null, area, down, up, cursor);
+    const g = svg('g', null, downArea, upArea, down, up, cursor);
     const plot = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', 'aria-hidden': 'true' }, g);
     const ylTop = h('div', { class: 'yl top' }), ylMid = h('div', { class: 'yl mid' });
     const at = (p) => new Date(p.t * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1206,10 +1208,12 @@
       const top = niceTop(Math.max(0, ...pts.map((p) => Math.max(p.down, p.up))) || 1e6);
       const line = (k) => curvePath(pts.map((p, i) => [x(i), H - p[k] / top * H]));
       if (n > 1) {
-        const dl = line('down');
-        area.setAttribute('d', dl + 'L' + x(n - 1).toFixed(1) + ',' + H + 'L' + x(0).toFixed(1) + ',' + H + 'Z');
+        const dl = line('down'), ul = line('up');
+        const base = 'L' + x(n - 1).toFixed(1) + ',' + H + 'L' + x(0).toFixed(1) + ',' + H + 'Z';
+        downArea.setAttribute('d', dl + base);
+        upArea.setAttribute('d', ul + base);
         down.setAttribute('d', dl);
-        up.setAttribute('d', line('up'));
+        up.setAttribute('d', ul);
       }
       // Axis values are round: no ".0".
       ylTop.textContent = fmtRate(top).replace('.0 ', ' ');
