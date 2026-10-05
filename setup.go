@@ -589,7 +589,7 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	backup := configFile + ".bak-" + oldVersion
+	backup := newUpdateBackupPath(configFile, oldVersion, time.Now())
 	step("Backing up config to %s", backup)
 	if err := copyFile(configFile, backup, 0o600, uid, gid); err != nil {
 		return err
@@ -626,6 +626,11 @@ func cmdUpdate(args []string) error {
 			return fmt.Errorf("update failed and the old version does not start either: %v (original error: %w)", rErr, err)
 		}
 		return fmt.Errorf("update failed, %s %s is running again: %w", appName, oldVersion, err)
+	}
+	if n, err := pruneUpdateBackups(configFile, keepUpdateBackups); err != nil {
+		fmt.Fprintln(os.Stderr, "  Could not remove older config backups:", err)
+	} else if n > 0 {
+		step("Removed %d older config backups, kept the newest %d", n, keepUpdateBackups)
 	}
 	fmt.Printf("\nUpdated %s %s → %s.\n", appName, oldVersion, version)
 	return nil

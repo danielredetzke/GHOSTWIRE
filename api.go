@@ -183,6 +183,9 @@ func (a *App) routes() http.Handler {
 	g("GET /api/v1/logs/download", a.downloadLog)
 	adm("GET /api/v1/backup", a.backup)
 	adm("POST /api/v1/restore", a.restore)
+	adm("GET /api/v1/update-backups", a.listUpdateBackups)
+	adm("DELETE /api/v1/update-backups", a.removeUpdateBackups)
+	adm("DELETE /api/v1/update-backups/{name}", a.removeUpdateBackup)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})

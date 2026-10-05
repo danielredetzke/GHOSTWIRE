@@ -182,7 +182,7 @@ the running service.
 | Command | What it does |
 |---|---|
 | `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. |
-| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>`, replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
+| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>` (keeping the newest 3 such copies), replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
 | `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
 | `GHOSTWIRE passwd [username]` | Sets a user's password (default: the first user) and reloads the running service. The way back in if you are locked out. |
 | `GHOSTWIRE version` | Prints the version. |
@@ -224,6 +224,7 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 |---|---|
 | `GHOSTWIRE` | the program |
 | `config.json` | all settings, server key, peers, pending setup links with their PINs, user password hashes, authenticator app secrets, passkeys, recovery code and token hashes (0600) |
+| `config.json.bak-*` | copies of `config.json` made by `update`; the newest 3 are kept, and Settings → Upkeep lists and removes them |
 | `stats.json` | traffic and connection history per peer |
 | `geo-country.mmdb`, `geo-asn.mmdb` | DB-IP Lite databases for country and network lookups |
 | `GHOSTWIRE.jsonl` | log, one JSON object per line. Changes carry `"audit":true` |
@@ -273,6 +274,7 @@ GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart   POST /updates/check
 GET    /logs?level=&limit=&audit=1       GET /logs/download
 signed in: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
+signed in: GET|DELETE /update-backups · DELETE /update-backups/{name}   (config copies made by update)
 public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
 ```
 

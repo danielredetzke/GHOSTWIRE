@@ -351,6 +351,30 @@ func TestAPI(t *testing.T) {
 	bearer("POST", "/tokens", 403, map[string]string{"name": "more", "scope": "rw"})
 	bearer("DELETE", "/tokens/"+tok["id"].(string), 403)
 	bearer("GET", "/backup", 403)
+	bearer("GET", "/update-backups", 403)
+	bearer("DELETE", "/update-backups", 403)
+
+	// Config copies made by update: listed newest first, removed one by
+	// one or all at once; nothing else in the folder can be removed.
+	for i, v := range []string{"v0.3.2", "v0.4.0"} {
+		f := filepath.Join(dir, "config.json.bak-"+v)
+		_ = os.WriteFile(f, []byte("{}"), 0o600)
+		_ = os.Chtimes(f, time.Now(), time.Now().Add(time.Duration(i-2)*time.Hour))
+	}
+	list := call("GET", "/update-backups", nil, 200)["backups"].([]any)
+	if len(list) != 2 || list[0].(map[string]any)["version"] != "v0.4.0" {
+		t.Fatalf("update backups: %v", list)
+	}
+	call("DELETE", "/update-backups/config.json", nil, 400)
+	call("DELETE", "/update-backups/stats.json", nil, 400)
+	call("DELETE", "/update-backups/config.json.bak-v9.9.9", nil, 400)
+	call("DELETE", "/update-backups/config.json.bak-v0.3.2", nil, 200)
+	if r := call("DELETE", "/update-backups", nil, 200); r["removed"] != float64(1) {
+		t.Fatalf("remove all: %v", r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+		t.Fatal("config.json is gone:", err)
+	}
 
 	call("DELETE", "/peers/"+id, nil, 200)
 	if len(store.Get().Peers) != 0 {

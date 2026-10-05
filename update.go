@@ -8,9 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -212,39 +210,15 @@ func fetchRelease(ctx context.Context, url string) (*Release, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
 		return nil, fmt.Errorf("unreadable answer from %s: %w", req.URL.Host, err)
 	}
-	if r.Draft || r.Prerelease || parseVersion(r.Tag) == nil {
+	if _, ok := compareVersions(r.Tag, r.Tag); r.Draft || r.Prerelease || !ok {
 		return nil, errors.New("the latest release is not a published version")
 	}
 	return &Release{Version: r.Tag, Published: r.Published, Notes: r.Body, URL: r.URL}, nil
 }
 
-var versionRe = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)`)
-
-// parseVersion reads "v0.4.0", "0.4.0" or "v0.4.0-3-gb18d16a" (a build
-// after v0.4.0) as major, minor and patch, or nil.
-func parseVersion(s string) []int {
-	m := versionRe.FindStringSubmatch(s)
-	if m == nil {
-		return nil
-	}
-	out := make([]int, 3)
-	for i := range out {
-		out[i], _ = strconv.Atoi(m[i+1])
-	}
-	return out
-}
-
 // newerVersion reports whether latest is a higher version than running.
 // A running version that is not a version number is never out of date.
 func newerVersion(latest, running string) bool {
-	l, r := parseVersion(latest), parseVersion(running)
-	if l == nil || r == nil {
-		return false
-	}
-	for i := range l {
-		if l[i] != r[i] {
-			return l[i] > r[i]
-		}
-	}
-	return false
+	c, ok := compareVersions(latest, running)
+	return ok && c > 0
 }

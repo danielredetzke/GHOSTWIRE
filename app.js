@@ -2211,6 +2211,37 @@
       } catch (x) { retErr.textContent = x.message; }
     };
 
+    // copies of config.json that updates leave behind
+    const copies = h('div', { class: 'section' });
+    const drawCopies = async () => {
+      let list;
+      try { list = (await api('GET', '/update-backups')).backups; } catch (x) { fill(copies, h('p', { class: 'err-text' }, x.message)); return; }
+      const remove = async (b) => {
+        if (!await confirmDialog({ title: 'Remove ' + b.name + '?', text: 'This copy of your settings from ' + b.version + ' is deleted from the server. It cannot be restored.', ok: 'Remove', danger: true })) return;
+        try { await api('DELETE', '/update-backups/' + encodeURIComponent(b.name)); toast('Removed ' + b.name); drawCopies(); } catch (x) { toast(x.message, true); }
+      };
+      const removeAll = async () => {
+        const n = list.length;
+        if (!await confirmDialog({ title: n === 1 ? 'Remove the copy?' : 'Remove all ' + n + ' copies?', text: 'They are deleted from the server and cannot be restored. Your current settings are not affected.', ok: 'Remove all', danger: true })) return;
+        try { await api('DELETE', '/update-backups'); toast(n === 1 ? 'Removed 1 copy' : 'Removed ' + n + ' copies'); drawCopies(); } catch (x) { toast(x.message, true); }
+      };
+      const total = list.reduce((t, b) => t + b.size, 0);
+      fill(copies,
+        h('div', { class: 'cardhead' },
+          h('div', null, h('strong', null, 'Copies made by updates'),
+            h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Each update saves the previous config.json next to it. They hold the same secrets as a backup.')),
+          list.length ? h('button', { type: 'button', class: 'btn', onClick: removeAll }, 'Remove all') : null),
+        list.length ? h('div', { class: 'tbl section' }, h('table', { class: 'narrow' },
+          h('thead', null, h('tr', null, h('th', null, 'File'), h('th', null, 'From version'), h('th', null, 'Saved'), h('th', { class: 'num' }, 'Size'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+          h('tbody', null, list.map((b, i) => h('tr', null,
+            h('td', null, h('span', { class: 'mono' }, b.name), i === 0 ? h('span', { class: 'tag plain' }, 'Newest') : null),
+            h('td', { class: 'mono' }, b.version),
+            h('td', null, fmtStamp(b.modified)),
+            h('td', { class: 'num' }, fmtBytes(b.size)),
+            h('td', { class: 'num' }, h('button', { type: 'button', class: 'btn small', onClick: () => remove(b) }, 'Remove'))))))) : h('p', { class: 'muted', style: { margin: '12px 0 0' } }, 'No copies from updates.'),
+        list.length ? h('p', { class: 'hint', style: { margin: '8px 0 0' } }, list.length + (list.length === 1 ? ' copy, ' : ' copies, ') + fmtBytes(total) + ' next to config.json. After each update, only the newest 3 are kept.') : null);
+    };
+
     // backup
     const restoreInput = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onChange: async (e) => {
       const f = e.target.files[0];
@@ -2303,11 +2334,13 @@
 
       h('section', { class: 'card', 'aria-labelledby': 'bk' },
         h('h3', { id: 'bk' }, 'Backup & restore'),
-        h('p', { class: 'lead' }, 'A backup is a copy of config.json with server key, peers, tokens and settings. Keep it safe: it contains the server\'s private key.'),
+        h('p', { class: 'lead' }, 'A backup is a copy of config.json with server key, peers, tokens and settings. Keep it safe: it contains the server\'s private key, preshared keys and authenticator app secrets.'),
         h('div', { class: 'actions' },
           h('a', { class: 'btn', href: '/api/v1/backup' }, 'Download backup'),
           h('button', { type: 'button', class: 'btn', onClick: () => restoreInput.click() }, 'Restore from file…'),
-          restoreInput)));
+          restoreInput),
+        copies));
+    drawCopies();
     const jumpTo = location.hash.split('#')[2];
     if (jumpTo) document.getElementById(jumpTo)?.scrollIntoView();
   }
