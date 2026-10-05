@@ -530,7 +530,7 @@
 
   const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/settings', 'settings', 'Settings']];
   let navLinks = {};
-  let srvBox, peerCount;
+  let srvBox, peerCount, verRow;
 
   function buildShell() {
     srvBox = h('div', { class: 'srv' }, h('span', { class: 'dot' }), h('span', null, 'Loading…'));
@@ -546,11 +546,23 @@
             h('span', { class: 'avatar', 'aria-hidden': 'true' }, me.name.slice(0, 1).toUpperCase()),
             h('span', null, h('strong', null, me.name), h('span', null, 'My account')))),
           h('button', { type: 'button', class: 'signout', 'aria-label': 'Sign out', onClick: logout }, icon('logout'), h('span', { class: 'tip', 'aria-hidden': 'true' }, 'Sign out'))),
-        h('div', { class: 'footrow' },
-          h('span', null, 'v' + me.version.replace(/^v/, '')))));
+        (verRow = h('div', { class: 'footrow' }))));
     main = h('main', { class: 'main', id: 'main' });
     app.replaceChildren(h('div', { class: 'shell' }, nav, main));
+    drawUpdateHint();
     refreshSide();
+  }
+
+  // drawUpdateHint shows a newer release next to the version in the sidebar
+  // and as a dot on Settings.
+  function drawUpdateHint() {
+    if (!verRow) return;
+    const v = me.updateAvailable;
+    fill(verRow, h('span', null, 'v' + me.version.replace(/^v/, '')),
+      v ? h('a', { class: 'upd', href: '#/settings#updates' }, v + ' available') : null);
+    const set = navLinks['#/settings'];
+    set.querySelectorAll('.pip, .sr').forEach((e) => e.remove());
+    if (v) set.append(h('span', { class: 'pip', title: 'Update available' }), h('span', { class: 'sr' }, ', update available'));
   }
 
   async function refreshSide() {
@@ -582,7 +594,7 @@
     [/^#\/peers\/new$/, '#/peers', viewPeerNew],
     [/^#\/peers\/([\w-]+)$/, '#/peers', viewPeer],
     [/^#\/server$/, '#/server', viewServer],
-    [/^#\/settings$/, '#/settings', viewSettings],
+    [/^#\/settings(#updates)?$/, '#/settings', viewSettings],
     [/^#\/account$/, '#/account', viewAccount],
   ];
 
@@ -1004,6 +1016,8 @@
         failing.length ? h('div', { class: 'notice err', role: 'alert' },
           h('div', null, h('strong', null, 'Needs attention: '), failing.map((c) => c.name + ' (' + c.detail + ')').join(' · ')),
           h('a', { class: 'btn small', href: '#/server' }, 'Health')) : null,
+
+        updateBanner(),
 
         h('div', { class: 'tiles' },
           h('div', { class: 'card tile' }, h('div', { class: 'k' }, 'Peers online'),
@@ -1693,6 +1707,125 @@
       bar);
   }
 
+  // ---------- updates ----------
+
+  const HIDE_UPDATE = 'GHOSTWIRE.hideUpdate';
+
+  // updateBanner tells the Dashboard about a newer release until it is
+  // hidden for that version.
+  function updateBanner() {
+    const v = me.updateAvailable;
+    let hidden = null;
+    try { hidden = localStorage.getItem(HIDE_UPDATE); } catch { /* storage blocked */ }
+    if (!v || hidden === v) return null;
+    const box = h('div', { class: 'notice new' },
+      h('div', null, h('strong', null, 'GHOSTWIRE ' + v + ' is available. '), 'You\'re on v' + me.version.replace(/^v/, '') + '.'),
+      h('div', { class: 'actions' },
+        h('a', { class: 'btn small', href: '#/settings#updates' }, 'How to update'),
+        h('button', { type: 'button', class: 'btn small ghost', onClick: () => {
+          try { localStorage.setItem(HIDE_UPDATE, v); } catch { /* storage blocked */ }
+          box.remove();
+        } }, 'Hide until the next version')));
+    return box;
+  }
+
+  // mdInline turns **bold** and `code` into elements; everything else stays
+  // text.
+  const mdInline = (text) => text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).filter(Boolean).map((t) =>
+    t.startsWith('**') ? h('strong', null, t.slice(2, -2)) : t.startsWith('`') ? h('code', null, t.slice(1, -1)) : t);
+
+  // releaseSummary picks the opening paragraph and the first bullet list out
+  // of the release notes; the full notes are a link away.
+  function releaseSummary(md) {
+    const lines = md.replace(/\r/g, '').split('\n');
+    const para = [];
+    for (const l of lines) {
+      if (!l.trim()) { if (para.length) break; continue; }
+      if (/^(#|- |\* |```|\|)/.test(l)) break;
+      para.push(l.trim());
+    }
+    const items = [];
+    let started = false;
+    for (const l of lines) {
+      const m = /^[-*] (.+)$/.exec(l);
+      if (m) { started = true; items.push(m[1]); } else if (started && l.trim()) break;
+    }
+    return { summary: para.join(' '), items };
+  }
+
+  function updatesCard(initial) {
+    let st = initial;
+    const card = h('section', { class: 'card', id: 'updates', 'aria-labelledby': 'upd' });
+    const setStatus = (next) => {
+      st = next;
+      me.updateAvailable = st.enabled && st.available ? st.latest.version : undefined;
+      drawUpdateHint();
+      draw();
+    };
+    const checkNow = async (btn) => {
+      if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+      try { setStatus(await api('POST', '/updates/check')); } catch (x) { toast(x.message, true); draw(); }
+    };
+    const save = async (updates) => {
+      try {
+        await api('PATCH', '/settings', { updates });
+        const s = await api('GET', '/settings');
+        if (s.updates.enabled) await checkNow(); else setStatus(s.updates);
+      } catch (x) { toast(x.message, true); draw(); }
+    };
+    const SOURCES = [['gitea', 'Gitea', 'git.redetzke.aero/Redetzke/GHOSTWIRE'], ['github', 'GitHub', 'github.com/danielredetzke/GHOSTWIRE']];
+    const srcName = () => SOURCES.find(([k]) => k === st.source)[1];
+
+    function draw() {
+      const cur = 'v' + st.current.replace(/^v/, '');
+      const rel = st.latest;
+      const notes = rel && st.available ? releaseSummary(rel.notes || '') : null;
+      const cmds = st.available && st.file ? [
+        'curl -fLO ' + st.fileUrl,
+        'curl -fLO ' + st.sumsUrl,
+        'sha256sum -c --ignore-missing SHA256SUMS',
+        'chmod +x ' + st.file,
+        'sudo ./' + st.file + ' update',
+      ].join('\n') : null;
+      fill(card,
+        h('div', { class: 'cardhead' },
+          h('h2', { id: 'upd' }, 'Updates'),
+          st.enabled ? h('span', { class: 'muted' }, st.checked ? 'Last checked ' + ago(st.checked) : 'Not checked yet') : null),
+        h('div', { class: 'upvers' },
+          h('div', { class: 'upbox' }, h('span', null, 'Running'), h('strong', { class: 'mono' }, cur)),
+          rel ? h('div', { class: st.available ? 'upbox new' : 'upbox' }, h('span', null, 'Latest release'), h('strong', { class: 'mono' }, rel.version)) : null,
+          h('div', { class: 'upbox' }, h('span', null, 'This server'), h('strong', null, st.arch ? 'Linux · ' + st.arch : 'No release file for this platform'))),
+        st.enabled && st.error ? h('div', { class: 'notice err', role: 'alert' },
+          h('div', null, 'The last check failed: ' + st.error + '. ' + (st.lastOk ? 'Last worked ' + ago(st.lastOk) + '. ' : '') + 'Try the other source.')) : null,
+        rel && !st.available ? h('p', { class: 'uptodate' }, h('span', { class: 'dot ok' }), 'GHOSTWIRE is up to date.') : null,
+        notes ? h('div', { class: 'upnotes' },
+          h('div', { class: 'hd' }, h('strong', null, 'What\'s new in ' + rel.version),
+            h('span', { class: 'muted' }, 'Released ' + fmtDate(rel.published) + ' · from ' + srcName()),
+            h('a', { href: rel.url, target: '_blank', rel: 'noopener' }, 'Full notes on ' + srcName())),
+          /security/i.test(notes.summary) ? h('p', { class: 'notice' }, 'Includes security fixes.') : null,
+          notes.summary ? h('p', null, mdInline(notes.summary)) : null,
+          notes.items.length ? h('ul', null, notes.items.map((t) => h('li', null, mdInline(t)))) : null) : null,
+        cmds ? h('div', { class: 'upcmd' },
+          h('div', { class: 'hd' }, h('strong', null, 'Update this server'), h('span', { class: 'muted' }, 'Run on the server. VPN connections stay up.')),
+          h('pre', { class: 'code' }, cmds),
+          h('div', null, h('button', { type: 'button', class: 'btn small', onClick: () => copy(cmds) }, 'Copy commands'))) : null,
+        st.available && !st.file ? h('p', null, 'No release file is built for this platform. ', h('a', { href: rel.url, target: '_blank', rel: 'noopener' }, 'See the release')) : null,
+        h('fieldset', { class: 'section' }, h('legend', { class: 'legend' }, 'Release source'),
+          h('div', { class: 'grid' }, SOURCES.map(([k, name, where]) => h('label', { class: 'opt' },
+            h('input', { type: 'radio', name: 'upsrc', value: k, checked: st.source === k, onChange: () => save({ source: k }) }),
+            h('span', null, h('strong', null, name), h('br'), h('span', { class: 'hint mono' }, where))))),
+          h('span', { class: 'hint' }, 'Both carry the same releases and files. The check, the release notes and the download links use the source you pick.')),
+        h('div', { class: 'uprow' },
+          h('label', { class: 'check' },
+            h('input', { type: 'checkbox', checked: st.enabled, onChange: (e) => save({ check: e.target.checked }) }),
+            h('span', null, 'Check for updates once a day', h('br'),
+              h('span', { class: 'hint' }, 'Asks ' + new URL(st.sourceUrl).host + ' for the latest release. Nothing about this server is sent.'))),
+          st.enabled ? h('button', { type: 'button', class: 'btn small', onClick: (e) => checkNow(e.currentTarget) }, 'Check now') : null));
+    }
+    draw();
+    return card;
+  }
+
   // ---------- settings ----------
 
   // ---------- my account ----------
@@ -2071,7 +2204,7 @@
     } });
 
     fill(wrap,
-      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Users, web interface, API access for the iOS app, logs, data retention and backups')),
+      h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Users, web interface, API access for the iOS app, logs, data retention, backups and updates')),
       restartBox,
 
       h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
@@ -2146,8 +2279,11 @@
         h('div', { class: 'actions' },
           h('a', { class: 'btn', href: '/api/v1/backup' }, 'Download backup'),
           h('button', { type: 'button', class: 'btn', onClick: () => restoreInput.click() }, 'Restore from file…'),
-          restoreInput)));
+          restoreInput)),
+
+      updatesCard(s.updates));
     await drawLogs();
+    if (location.hash.endsWith('#updates')) document.getElementById('updates').scrollIntoView();
   }
 
   render();

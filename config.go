@@ -27,14 +27,23 @@ type Config struct {
 	APITokens []APIToken `json:"apiTokens"`
 	// Admin is the single account of config version 1; applyDefaults moves
 	// it into Users.
-	Admin  *Admin       `json:"admin,omitempty"`
-	Server Server       `json:"server"`
-	Peers  []Peer       `json:"peers"`
-	Log    LogConfig    `json:"log"`
-	Stats  StatsConfig  `json:"stats"`
-	Decoy  DecoyConfig  `json:"decoy"`
-	SignIn SignInConfig `json:"signin"`
+	Admin   *Admin        `json:"admin,omitempty"`
+	Server  Server        `json:"server"`
+	Peers   []Peer        `json:"peers"`
+	Log     LogConfig     `json:"log"`
+	Stats   StatsConfig   `json:"stats"`
+	Decoy   DecoyConfig   `json:"decoy"`
+	SignIn  SignInConfig  `json:"signin"`
+	Updates UpdatesConfig `json:"updates"`
 }
+
+// UpdatesConfig sets the daily check for a newer release.
+type UpdatesConfig struct {
+	Check  *bool  `json:"check,omitempty"` // default on
+	Source string `json:"source"`          // gitea | github, see updateSources
+}
+
+func (c UpdatesConfig) checkEnabled() bool { return c.Check == nil || *c.Check }
 
 // SignInConfig holds the rules for signing in to the web interface.
 type SignInConfig struct {
@@ -246,6 +255,9 @@ func (c *Config) applyDefaults() {
 	if c.Decoy.Page == "" {
 		c.Decoy.Page = "nginx"
 	}
+	if c.Updates.Source == "" {
+		c.Updates.Source = "gitea"
+	}
 	if c.APITokens == nil {
 		c.APITokens = []APIToken{}
 	}
@@ -381,6 +393,9 @@ func (c *Config) validate() error {
 	}
 	if _, ok := decoyPages[c.Decoy.Page]; !ok {
 		return fmt.Errorf("unknown decoy page %q", c.Decoy.Page)
+	}
+	if _, ok := updateSources[c.Updates.Source]; !ok {
+		return fmt.Errorf("update source must be gitea or github")
 	}
 	switch c.Web.TLS.Mode {
 	case "acme":

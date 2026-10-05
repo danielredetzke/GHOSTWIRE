@@ -37,6 +37,11 @@ dependencies on the server: the binary installs, updates and removes itself.
   retention.
 - **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files
   kept by default. Changes are marked as audit entries.
+- **Update notice:** once a day the server asks Gitea or GitHub (your choice
+  under Settings → Updates) for the latest release. A newer one shows in the
+  sidebar, on the Dashboard and in Settings, with its release notes and the
+  commands to update this server. Nothing about the server is sent; the check
+  can be switched off.
 - **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
   certificate files, or plain HTTP behind a reverse proxy.
 
@@ -264,7 +269,7 @@ POST   /peers/{id}/enable | /disable | /issue-config
 GET    /peers/{id}/stats?range=…        GET /peers/{id}/sessions?limit=100
 GET    /peers/{id}/latency               (24 h, one point per 5 minutes)
 GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
-GET    /settings       PATCH /settings   POST /restart
+GET    /settings       PATCH /settings   POST /restart   POST /updates/check
 GET    /logs?level=&limit=&audit=1       GET /logs/download
 signed in: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
 public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
@@ -274,6 +279,13 @@ public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link o
 `{"delivery": "link", "linkHours": 1|24|168, "linkPIN": true}` to answer with a
 setup link (`setup.url`, `setup.pin`, `setup.qr`) instead of a config. With a
 link, the peer's current keys keep working until the link is opened.
+
+`GET /settings` includes `updates`: the running and latest version,
+`available`, the release notes and the download links for this server's
+platform. `PATCH /settings` `{"updates": {"source": "gitea"|"github",
+"check": false}}` picks the source or switches the daily check off;
+`POST /updates/check` checks now. `GET /auth/me` has `updateAvailable` with
+the newer version while there is one.
 
 Traffic is reported from the peer's point of view: `down` is what the peer
 downloaded, `up` is what it uploaded.

@@ -78,6 +78,7 @@ func TestValidate(t *testing.T) {
 		"bad dns":         func(c *Config) { c.Peers[0].DNS = []string{"dns.example"} },
 		"bad port":        func(c *Config) { c.Server.ListenPort = 70000 },
 		"unmasked net":    func(c *Config) { c.Server.IPv4 = "10.84.12.5/24" },
+		"update source":   func(c *Config) { c.Updates.Source = "sourceforge" },
 	} {
 		cc := c.clone()
 		mutate(cc)

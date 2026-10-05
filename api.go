@@ -26,6 +26,7 @@ type App struct {
 	logPath  string
 	logw     *rotatingWriter // nil in tests
 	geo      *Geo            // nil in tests
+	updates  *Updater        // nil in tests
 	started  time.Time
 	shutdown func() // graceful stop; systemd restarts the service
 }
@@ -173,6 +174,7 @@ func (a *App) routes() http.Handler {
 	// need a signed-in user.
 	g("GET /api/v1/settings", a.getSettings)
 	g("PATCH /api/v1/settings", a.patchSettings)
+	g("POST /api/v1/updates/check", a.checkUpdates)
 	g("POST /api/v1/restart", a.restart)
 	adm("GET /api/v1/tokens", a.listTokens)
 	adm("POST /api/v1/tokens", a.createToken)
@@ -257,6 +259,9 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
 		"mustChangePassword": p.MustChangePassword, "mfaSetupRequired": p.MFASetupRequired, "version": version, "session": p.Session,
+	}
+	if v := a.updates.Available(); v != "" {
+		out["updateAvailable"] = v
 	}
 	if _, u := a.store.Get().userByID(p.UserID); u != nil {
 		out["username"], out["note"], out["created"] = u.Username, u.Note, u.Created
@@ -999,6 +1004,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"decoy":       cfg.Decoy,
 		"signin":      cfg.SignIn,
 		"geo":         a.geoStatus(),
+		"updates":     a.updates.Status(),
 		"fingerprint": a.tls.Fingerprint(),
 		"logPath":     a.logPath,
 	})
@@ -1029,6 +1035,9 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := field(m, "signin", &c.SignIn); err != nil {
+			return err
+		}
+		if err := field(m, "updates", &c.Updates); err != nil {
 			return err
 		}
 		return field(m, "log", &c.Log)
@@ -1176,6 +1185,17 @@ func (a *App) applyRuntime(c *Config) {
 		a.logw.SetLimits(c.Log.MaxSizeMB, c.Log.MaxFiles)
 	}
 	a.geo.SetEnabled(c.Stats.geoEnabled())
+	a.updates.Set(c.Updates)
+}
+
+// checkUpdates asks the release source now and returns what it found.
+func (a *App) checkUpdates(w http.ResponseWriter, r *http.Request) {
+	if a.updates == nil || !a.updates.Status().Enabled {
+		writeErr(w, badRequest("the update check is switched off"))
+		return
+	}
+	a.updates.Check(r.Context())
+	writeJSON(w, http.StatusOK, a.updates.Status())
 }
 
 func (a *App) geoStatus() GeoStatus {
