@@ -1063,10 +1063,7 @@
       fill(wrap,
         h('div', { class: 'head' },
           h('div', null, h('h1', null, 'Dashboard'),
-            h('p', { class: 'sub' }, 'Endpoint ', h('span', { class: 'mono' }, st.endpoint), ' · network ', h('span', { class: 'mono' }, st.ipv4))),
-          h('div', { class: 'actions' },
-            h('a', { class: 'btn', href: '#/server' }, 'Server config'),
-            h('a', { class: 'btn primary', href: '#/peers/new' }, icon('plus', 16, 2), 'Add peer'))),
+            h('p', { class: 'sub' }, 'Endpoint ', h('span', { class: 'mono' }, st.endpoint), ' · network ', h('span', { class: 'mono' }, st.ipv4)))),
 
         failing.length ? h('div', { class: 'notice err', role: 'alert' },
           h('div', null, h('strong', null, 'Needs attention: '), failing.map((c) => c.name + ' (' + c.detail + ')').join(' · ')),
