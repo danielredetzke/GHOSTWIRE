@@ -33,8 +33,20 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body { background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.45; }
-a { color: var(--link); }
-a:hover { color: var(--link-hover); }
+a { color: var(--link); text-decoration-color: rgba(28, 92, 171, .35); text-underline-offset: 3px; }
+a:hover { color: var(--link-hover); text-decoration-color: currentColor; }
+/* Links to another page (go, back) are ink with an arrow that nudges on
+   hover; outside links (ext) keep the link colour and get ↗. */
+a.go, a.back { color: var(--ink); font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+a.go:hover, a.back:hover { color: var(--link); }
+a.go .ar { margin-left: 4px; }
+a.back .ar { margin-right: 4px; }
+a.ext .ar { margin-left: 2px; font-size: .8em; }
+.ar { display: inline-block; transition: transform .15s; }
+a.go:hover .ar { transform: translateX(3px); }
+a.back:hover .ar { transform: translateX(-3px); }
+a.ext:hover .ar { transform: translate(2px, -2px); }
+@media (prefers-reduced-motion: reduce) { .ar { transition: none; } }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 [hidden] { display: none !important; }
 .mono { font-family: var(--mono); font-size: 13px; }
@@ -86,7 +98,7 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .titleline { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .sub { margin: 4px 0 0; color: var(--ink-2); }
-.back { font-size: 13px; margin-bottom: -8px; }
+.back { margin-bottom: -8px; align-self: flex-start; }
 
 /* cards */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 0; }
@@ -151,7 +163,7 @@ tr:last-child td { border-bottom: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td .note { font-size: 12px; color: var(--ink-3); }
 a.pname { color: var(--ink); font-weight: 600; text-decoration: none; }
-a.pname:hover, a.pname:focus-visible { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+a.pname:hover { color: var(--link); }
 .empty { padding: 24px 12px; margin: 0; text-align: center; color: var(--ink-3); }
 
 /* forms */
@@ -334,8 +346,8 @@ dialog::backdrop { background: rgba(22, 23, 26, .55); }
 .setupbox { width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 24px; margin: auto 0; }
 .setupbox h1 { font-size: 22px; }
 .setupbox p { margin: 0; color: #c9c9c3; }
-.setupbox a { color: #9cc3f5; }
-.setupbox a:hover { color: #fff; }
+.setupbox a { color: #9cc3f5; text-decoration-color: rgba(156, 195, 245, .4); }
+.setupbox a:hover { color: #fff; text-decoration-color: currentColor; }
 .setupbox .center, .setupbox.center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .setupbox.center { gap: 20px; }
 .setupbox .ghost { opacity: .45; }

@@ -20,6 +20,10 @@
   }
 
   // Same drawing as favicon.svg.
+  // ext opens an outside page in a new tab, marked with ↗ as in the app.
+  const ext = (href, text) => h('a', { class: 'ext', href, target: '_blank', rel: 'noopener' }, text,
+    h('span', { class: 'ar', 'aria-hidden': 'true' }, '↗'), h('span', { class: 'sr' }, ' (opens in a new tab)'));
+
   function logo(size, plain) {
     const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     for (const [k, v] of Object.entries({ width: size, height: size, viewBox: '0 0 64 64', 'aria-hidden': 'true' })) s.setAttribute(k, v);
@@ -108,9 +112,9 @@
       h('div', { class: 'notice' }, 'Save it now. This page can\'t be opened again: the private key exists only here and isn\'t stored anywhere.'),
       h('ol', { class: 'steps' },
         step(1, 'Install WireGuard',
-          h('p', null, h('a', { href: 'https://apps.apple.com/app/wireguard/id1441195209', rel: 'noopener' }, 'App Store'), ' · ',
-            h('a', { href: 'https://play.google.com/store/apps/details?id=com.wireguard.android', rel: 'noopener' }, 'Google Play'), ' · ',
-            h('a', { href: 'https://www.wireguard.com/install/', rel: 'noopener' }, 'Other systems'))),
+          h('p', null, ext('https://apps.apple.com/app/wireguard/id1441195209', 'App Store'), ' · ',
+            ext('https://play.google.com/store/apps/details?id=com.wireguard.android', 'Google Play'), ' · ',
+            ext('https://www.wireguard.com/install/', 'Other systems'))),
         step(2, 'Add the profile',
           h('button', { type: 'button', class: 'btn primary', onClick: download }, 'Download ' + file),
           h('p', null, 'Open the downloaded file with WireGuard, or in WireGuard tap + and choose “Create from file”.')),

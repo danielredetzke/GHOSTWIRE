@@ -169,6 +169,14 @@
 
   const badge = (st) => h('span', { class: 'badge' }, h('span', { class: st.dot }), st.label);
 
+  // go links to another page of the app; back returns to one. Their arrows
+  // nudge on hover. ext opens an outside page in a new tab, marked with ↗.
+  const arrow = (c) => h('span', { class: 'ar', 'aria-hidden': 'true' }, c);
+  const go = (href, text) => h('a', { class: 'go', href }, text, arrow('→'));
+  const back = (href, text) => h('a', { class: 'back', href }, arrow('←'), text);
+  const ext = (href, text) => h('a', { class: 'ext', href, target: '_blank', rel: 'noopener' }, text, arrow('↗'), h('span', { class: 'sr' }, ' (opens in a new tab)'));
+  const peerLink = (p) => h('a', { class: 'pname', href: '#/peers/' + p.id }, p.name);
+
   // svg builds an SVG element; attrs are set as attributes.
   function svg(tag, attrs, ...kids) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
@@ -1086,17 +1094,17 @@
 
         h('div', { class: 'cols' },
           h('section', { class: 'card flush' },
-            h('div', { class: 'cardhead' }, h('h2', null, 'Peers'), h('a', { href: '#/peers' }, 'All peers')),
+            h('div', { class: 'cardhead' }, h('h2', null, 'Peers'), go('#/peers', 'All peers')),
             top.length ? h('div', { class: 'tbl' }, h('table', { class: 'narrow' },
               h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Status'), h('th', { class: 'num' }, 'Download, 24 h'), h('th', { class: 'num' }, 'Upload, 24 h'))),
               h('tbody', null, top.map((p) => h('tr', null,
-                h('td', null, h('a', { href: '#/peers/' + p.id }, p.name)),
+                h('td', null, peerLink(p)),
                 h('td', null, badge(peerState(p))),
                 h('td', { class: 'num' }, fmtBytes(p.stats.down24h)),
                 h('td', { class: 'num' }, fmtBytes(p.stats.up24h)))))))
-              : h('p', { class: 'empty' }, 'No peers yet. ', h('a', { href: '#/peers/new' }, 'Add the first one'))),
+              : h('p', { class: 'empty' }, 'No peers yet. ', go('#/peers/new', 'Add the first one'))),
           logs ? h('section', { class: 'card' },
-            h('div', { class: 'cardhead' }, h('h2', null, 'Recent activity'), h('a', { href: '#/log' }, 'Log')),
+            h('div', { class: 'cardhead' }, h('h2', null, 'Recent activity'), go('#/log', 'Log')),
             logs.lines.length
               ? h('div', null, logs.lines.map((l) => h('div', { class: 'ev' }, h('time', { datetime: l.time }, fmtWhen(l.time)), h('span', null, describeAudit(l)))))
               : h('p', { class: 'empty' }, 'No changes yet.')) : null));
@@ -1294,7 +1302,7 @@
           h('tbody', null, online.map(({ p, r, hist }) => {
             const idle = r[0] + r[1] < IDLE_BPS;
             return h('tr', { class: idle ? 'idle' : null },
-              h('td', null, h('a', { href: '#/peers/' + p.id }, p.name), idle ? h('span', { class: 'tag plain' }, 'idle') : null),
+              h('td', null, peerLink(p), idle ? h('span', { class: 'tag plain' }, 'idle') : null),
               h('td', null, rateSpark(hist)),
               h('td', { class: 'num' }, rate(r[0], idle)),
               h('td', { class: 'num' }, rate(r[1], idle)),
@@ -1424,7 +1432,7 @@
         return hit && keep;
       });
       tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
-        h('td', null, h('a', { class: 'pname', href: '#/peers/' + p.id }, p.name), p.note ? h('div', { class: 'note' }, p.note) : null),
+        h('td', null, peerLink(p), p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
@@ -1579,7 +1587,7 @@
     drawPreview();
 
     fill(wrap,
-      h('a', { class: 'back', href: '#/peers' }, '← Peers'),
+      back('#/peers', 'Peers'),
       h('div', null, h('h1', null, 'Add peer'), h('p', { class: 'sub' }, 'Assigns the next free address and adds the peer to ' + srv.interface + ' without a restart.')),
       h('div', { class: 'split' }, form,
         h('aside', { class: 'card aside', 'aria-labelledby': 'pv' },
@@ -1736,7 +1744,7 @@
     };
 
     fill(wrap,
-      h('a', { class: 'back', href: '#/peers' }, '← Peers'),
+      back('#/peers', 'Peers'),
       h('div', { class: 'head' },
         h('div', null,
           h('div', { class: 'titleline' }, h('h1', null, p.name), badge(st.key === 'online' ? { ...st, label: 'Online · handshake ' + ago(p.stats.lastHandshake) } : st)),
@@ -1787,7 +1795,7 @@
           : h('p', { class: 'empty' }, 'No connections recorded yet.'),
         sessions.length > SHORT ? h('div', { style: { margin: '8px 12px 0' } }, sessMore) : null,
         h('p', { class: 'hint', style: { margin: '4px 12px 12px' } }, 'Country and network: ',
-          h('a', { href: 'https://db-ip.com', target: '_blank', rel: 'noopener' }, 'IP Geolocation by DB-IP'),
+          ext('https://db-ip.com', 'IP Geolocation by DB-IP'),
           '. Kept as long as the daily traffic history.')),
 
       h('form', { class: 'card', onSubmit: save },
@@ -2117,7 +2125,7 @@
         notes ? h('div', { class: 'upnotes' },
           h('div', { class: 'hd' }, h('strong', null, 'What\'s new in ' + rel.version),
             h('span', { class: 'muted' }, 'Released ' + fmtDate(rel.published) + ' · from ' + srcName()),
-            h('a', { href: rel.url, target: '_blank', rel: 'noopener' }, 'Full notes on ' + srcName())),
+            ext(rel.url, 'Full notes on ' + srcName())),
           /security/i.test(notes.summary) ? h('p', { class: 'notice' }, 'Includes security fixes.') : null,
           notes.summary ? h('p', null, mdInline(notes.summary)) : null,
           notes.items.length ? h('ul', null, notes.items.map((t) => h('li', null, mdInline(t)))) : null) : null,
@@ -2125,7 +2133,7 @@
           h('div', { class: 'hd' }, h('strong', null, 'Update this server'), h('span', { class: 'muted' }, 'Run on the server. VPN connections stay up.')),
           h('pre', { class: 'code' }, cmds),
           h('div', null, h('button', { type: 'button', class: 'btn small', onClick: () => copy(cmds) }, 'Copy commands'))) : null,
-        st.available && !st.file ? h('p', null, 'No release file is built for this platform. ', h('a', { href: rel.url, target: '_blank', rel: 'noopener' }, 'See the release')) : null,
+        st.available && !st.file ? h('p', null, 'No release file is built for this platform. ', ext(rel.url, 'See the release')) : null,
         h('fieldset', { class: 'section' }, h('legend', { class: 'legend' }, 'Release source'),
           h('div', { class: 'grid' }, SOURCES.map(([k, name, where]) => h('label', { class: 'opt' },
             h('input', { type: 'radio', name: 'upsrc', value: k, checked: st.source === k, onChange: () => save({ source: k }) }),
