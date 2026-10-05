@@ -1510,6 +1510,69 @@
 
   const DNS_PRESETS = [['Quad9', '9.9.9.9, 149.112.112.112']];
 
+  // healthParts turns the server's checks into the Health card: the public
+  // address per IP family (from its uplink and public address checks), then
+  // one tile per other check with a plain-word status, the raw setting and,
+  // when it fails, what is wrong.
+  function healthParts(checks) {
+    const by = Object.fromEntries(checks.map((c) => [c.name, c]));
+    const addrs = [];
+    for (const fam of ['IPv4', 'IPv6']) {
+      const up = by[fam + ' uplink'], pub = by['Public ' + fam];
+      if (!up) continue;
+      const m = pub && pub.ok ? /^(\S+) \((.+)\)$/.exec(pub.detail) : null;
+      addrs.push({
+        label: 'Public ' + fam + (up.ok ? ' · ' + up.detail : ''),
+        ok: up.ok && (!pub || pub.ok),
+        value: m ? m[1] : (pub ? pub.detail : up.detail),
+        note: m ? m[2] : null,
+        mono: !!(pub && pub.ok),
+      });
+    }
+    const sysctl = (d) => d.replace(/^net\.ipv[46]\.(conf\.)?/, '');
+    const tiles = checks.filter((c) => !/^(IPv[46] uplink|Public IPv[46])$/.test(c.name)).map((c) => {
+      const t = { label: c.name, ok: c.ok, status: c.ok ? 'OK' : 'Problem', raw: null, problem: c.ok ? null : c.detail };
+      switch (c.name) {
+        case 'WireGuard interface': t.status = c.detail; t.problem = null; break;
+        case 'IPv4 forwarding': case 'IPv6 forwarding': t.status = c.ok ? 'On' : 'Off'; t.raw = sysctl(c.detail); t.problem = null; break;
+        case 'IPv6 router announcements': {
+          const [setting, ...why] = c.detail.split(': ');
+          t.label = 'Router announcements';
+          t.status = !c.ok ? 'Ignored' : setting.endsWith('=0') ? 'Not used' : 'Accepted';
+          t.raw = sysctl(setting);
+          t.problem = c.ok || !why.length ? null : why.join(': ');
+          break;
+        }
+        case 'nftables rules':
+          t.status = c.ok ? 'Present' : 'Missing';
+          if (/^table /.test(c.detail)) { t.raw = c.detail.replace(/ (present|missing)$/, ''); t.problem = null; }
+          break;
+        case 'Last apply':
+          if (c.ok) { const iso = c.detail.replace(/^applied /, ''); t.status = ago(iso); t.title = fmtStamp(iso); } else t.status = 'Failed';
+          break;
+        case 'Latency check': t.status = c.ok ? 'Tunnel ping works' : 'Failing'; break;
+      }
+      return t;
+    });
+    return { addrs, tiles, failing: checks.filter((c) => !c.ok).length, total: checks.length };
+  }
+
+  function healthCard(checks) {
+    const hp = healthParts(checks);
+    const dot = (ok) => [h('span', { class: ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'sr' }, ok ? 'OK: ' : 'Problem: ')];
+    return h('section', { class: 'card', 'aria-labelledby': 'hc' },
+      h('div', { class: 'hchead' }, h('h2', { id: 'hc' }, 'Health'),
+        h('span', { class: hp.failing ? 'bad' : null }, hp.failing ? hp.failing + ' of ' + hp.total + ' checks failing' : 'All ' + hp.total + ' checks pass')),
+      hp.addrs.length ? h('div', { class: 'hcaddrs' }, hp.addrs.map((a) => h('div', { class: a.ok ? 'hcaddr' : 'hcaddr bad' },
+        h('div', { class: 'l' }, dot(a.ok), a.label),
+        h('div', { class: a.mono ? 'v mono' : 'v' }, a.value, a.note ? h('span', { class: 'n' }, ' ' + a.note) : null)))) : null,
+      h('div', { class: 'hctiles' }, hp.tiles.map((t) => h('div', { class: t.ok ? 'hctile' : 'hctile bad', title: t.title || null },
+        h('div', { class: 'l' }, h('span', null, t.label), dot(t.ok)),
+        h('div', { class: 's' }, t.status),
+        t.raw ? h('div', { class: 'r mono' }, t.raw) : null,
+        t.problem ? h('div', { class: 'p' }, t.problem) : null))));
+  }
+
   async function viewServer(wrap) {
     const [srv, st] = await Promise.all([api('GET', '/server'), api('GET', '/status')]);
     const orig = JSON.parse(JSON.stringify(srv));
@@ -1580,11 +1643,7 @@
     fill(wrap,
       h('div', null, h('h1', null, 'Server'), h('p', { class: 'sub' }, 'WireGuard interface, address plan, client defaults and firewall')),
       result,
-      h('section', { class: 'card', 'aria-labelledby': 'hc' },
-        h('h2', { id: 'hc' }, 'Health'),
-        h('div', { style: { marginTop: '8px' } }, st.checks.map((c) => h('div', { class: 'chk' },
-          h('span', { class: c.ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'sr' }, c.ok ? 'OK: ' : 'Problem: '),
-          h('b', null, c.name), h('span', { class: c.ok ? 'muted' : null }, c.detail))))),
+      healthCard(st.checks),
 
       h('section', { class: 'card', 'aria-labelledby': 'if' },
         h('h2', { id: 'if' }, 'Interface'),
