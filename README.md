@@ -227,27 +227,28 @@ After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
 
 Base path `/api/v1`. The web interface signs in with a session cookie; every
 user is an admin. Apps and scripts use `Authorization: Bearer <token>`; create
-the token under Settings → Pair iOS app, or in the iOS app under Settings →
-Access → API tokens. A token belongs to the user who made
+the token under Settings → Pair iOS app. A token belongs to the user who made
 it and is revoked when that user is deleted. A read-only token may only use
-GET. Full-access tokens can do everything the web interface does except backup
-and restore. Users, passwords and API tokens need a full-access token even for
-reading.
+GET. Full-access tokens can do everything the web interface does except the
+endpoints marked "signed in": users, passwords, API tokens, the sign-in rules,
+backup and restore.
 
 For a user with two-step sign-in, `POST /auth/login` answers
 `{"mfa": true, "ticket": "…", "methods": ["key", "totp", "recovery"]}`
 instead of starting a session; the ticket is good for 5 minutes, and one of
 the `/auth/login/…` steps turns it into the session. `PATCH /settings`
-`{"signin": {"requireMfa": true}}` requires two-step sign-in for every user.
+`{"signin": {"requireMfa": true}}` requires two-step sign-in for every user;
+only a signed-in user can change it.
 
 `POST /users` and `POST /users/{id}/reset-password` take
 `{"password": "…", "mustChangePassword": true}`; with `true` (the default) the
 user can do nothing but choose a new password at the next sign-in.
 
 ```
-POST   /auth/login · /auth/logout        GET /auth/me        POST /auth/password (own password)
-GET    /users      POST /users           PATCH /users/{id}   DELETE /users/{id}
-POST   /users/{id}/reset-password    POST /users/{id}/reset-mfa
+POST   /auth/login · /auth/logout        GET /auth/me
+signed in: POST /auth/password (own password)
+signed in: GET|POST /users · PATCH|DELETE /users/{id}
+signed in: POST /users/{id}/reset-password · /users/{id}/reset-mfa
 GET    /auth/options (public: is passkey sign-in offered here)
 POST   /auth/login/totp · /auth/login/recovery {"ticket", "code"}
 POST   /auth/login/key/begin {"ticket"} · /auth/login/key/finish?ticket=  (body: the WebAuthn credential)
@@ -265,8 +266,7 @@ GET    /peers/{id}/latency               (24 h, one point per 5 minutes)
 GET    /peers/{id}/setup (not read-only) DELETE /peers/{id}/setup
 GET    /settings       PATCH /settings   POST /restart
 GET    /logs?level=&limit=&audit=1       GET /logs/download
-GET    /tokens     POST /tokens          DELETE /tokens/{id}
-signed in: GET /backup · POST /restore
+signed in: GET|POST /tokens · DELETE /tokens/{id} · GET /backup · POST /restore
 public: GET /setup/{token} · POST /setup/{token} {"pin"}   (what a setup link opens)
 ```
 
@@ -296,9 +296,9 @@ override a drop in another table, so if ufw or firewalld is active, allow UDP
 ## iOS app
 
 The native iPhone app (SwiftUI, iOS 17+) lives in its own project,
-GHOSTWIRE-Companion. It does everything the web interface does except
-backup and restore, and adding an authenticator app or passkeys for two-step
-sign-in. Pair it in the web interface under
+GHOSTWIRE-Companion. It manages peers, the server and the app settings and
+shows stats and logs. Users, passwords, API tokens, two-step sign-in, backup
+and restore stay in the web interface. Pair it in the web interface under
 Settings → Pair iOS app: scan the QR code, or tap "Copy pairing code" and paste
 it into the app's "Enter manually". Self-signed certificates are pinned during
 pairing.

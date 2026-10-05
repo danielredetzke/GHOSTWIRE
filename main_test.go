@@ -313,8 +313,13 @@ func TestAPI(t *testing.T) {
 	secret := tok["token"].(string)
 
 	// Read-only token: GET works, changes are refused, admin endpoints too.
-	bearer := func(method, path string, want int) {
-		req, _ := http.NewRequest(method, srv.URL+"/api/v1"+path, nil)
+	bearer := func(method, path string, want int, body ...any) {
+		var rd io.Reader
+		if len(body) > 0 {
+			b, _ := json.Marshal(body[0])
+			rd = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, srv.URL+"/api/v1"+path, rd)
 		req.Header.Set("Authorization", "Bearer "+secret)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -330,10 +335,20 @@ func TestAPI(t *testing.T) {
 	bearer("GET", "/tokens", 403)
 	bearer("GET", "/peers/"+id+"/setup", 403) // the link would set up a device
 
-	// A full-access token manages users and tokens, but not backups.
+	// A full-access token changes settings, but users, passwords, tokens,
+	// the sign-in rules and backups need a signed-in user.
 	secret = call("POST", "/tokens", map[string]string{"name": "full", "scope": "rw"}, 201)["token"].(string)
-	bearer("GET", "/users", 200)
-	bearer("GET", "/tokens", 200)
+	uid := call("GET", "/auth/me", nil, 200)["id"].(string)
+	bearer("PATCH", "/settings", 200, map[string]any{"log": store.Get().Log})
+	bearer("PATCH", "/settings", 403, map[string]any{"signin": map[string]bool{"requireMfa": false}})
+	bearer("GET", "/users", 403)
+	bearer("POST", "/users", 403, map[string]any{"username": "eve", "password": "correct horse battery"})
+	bearer("POST", "/users/"+uid+"/reset-password", 403, map[string]any{"password": "correct horse battery"})
+	bearer("POST", "/users/"+uid+"/reset-mfa", 403)
+	bearer("POST", "/auth/password", 403, map[string]string{"current": "x", "new": "y"})
+	bearer("GET", "/tokens", 403)
+	bearer("POST", "/tokens", 403, map[string]string{"name": "more", "scope": "rw"})
+	bearer("DELETE", "/tokens/"+tok["id"].(string), 403)
 	bearer("GET", "/backup", 403)
 
 	call("DELETE", "/peers/"+id, nil, 200)
@@ -969,7 +984,6 @@ func TestUsers(t *testing.T) {
 	if n := len(admin("GET", "/users", nil, 200)["users"].([]any)); n != 2 {
 		t.Fatalf("users: %d, want 2", n)
 	}
-	admin("PATCH", "/settings", map[string]any{"adminUsername": "x"}, 400)
 }
 
 // TestDecoy checks that the decoy hides the web interface but leaves the API

@@ -97,17 +97,6 @@ func (a *App) guard(adminOnly bool, h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// fullAccess refuses read-only tokens, also for GET.
-func fullAccess(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if who(r).Scope == "ro" {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this token is read-only"})
-			return
-		}
-		h(w, r)
-	}
-}
-
 // applyResult saves-then-applies: the config is already stored, so a kernel
 // error is reported but does not undo the change.
 func (a *App) apply() string {
@@ -121,8 +110,6 @@ func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	g := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(false, h)) }
 	adm := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(true, h)) }
-	// full is for signed-in users and full-access tokens, even for reading.
-	full := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, a.guard(false, fullAccess(h))) }
 
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
@@ -146,13 +133,13 @@ func (a *App) routes() http.Handler {
 	adm("DELETE /api/v1/auth/mfa/keys/{id}", a.keyRemove)
 	adm("POST /api/v1/auth/mfa/recovery-codes", a.newRecoveryCodesHandler)
 	g("GET /api/v1/auth/me", a.me)
-	full("POST /api/v1/auth/password", a.changePassword)
-	full("GET /api/v1/users", a.listUsers)
-	full("POST /api/v1/users", a.createUser)
-	full("PATCH /api/v1/users/{id}", a.patchUser)
-	full("POST /api/v1/users/{id}/reset-password", a.resetPassword)
-	full("DELETE /api/v1/users/{id}", a.deleteUser)
-	full("POST /api/v1/users/{id}/reset-mfa", a.resetMFA)
+	adm("POST /api/v1/auth/password", a.changePassword)
+	adm("GET /api/v1/users", a.listUsers)
+	adm("POST /api/v1/users", a.createUser)
+	adm("PATCH /api/v1/users/{id}", a.patchUser)
+	adm("POST /api/v1/users/{id}/reset-password", a.resetPassword)
+	adm("DELETE /api/v1/users/{id}", a.deleteUser)
+	adm("POST /api/v1/users/{id}/reset-mfa", a.resetMFA)
 
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
@@ -182,13 +169,14 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup/{token}", a.setupRedeem)
 
 	// Full-access tokens (the iOS app) may change app settings, read logs and
-	// manage users and tokens. Backups need a signed-in user.
+	// restart. Users, passwords, API tokens, the sign-in rules and backups
+	// need a signed-in user.
 	g("GET /api/v1/settings", a.getSettings)
 	g("PATCH /api/v1/settings", a.patchSettings)
 	g("POST /api/v1/restart", a.restart)
-	full("GET /api/v1/tokens", a.listTokens)
-	full("POST /api/v1/tokens", a.createToken)
-	full("DELETE /api/v1/tokens/{id}", a.deleteToken)
+	adm("GET /api/v1/tokens", a.listTokens)
+	adm("POST /api/v1/tokens", a.createToken)
+	adm("DELETE /api/v1/tokens/{id}", a.deleteToken)
 	g("GET /api/v1/logs", a.logs)
 	g("GET /api/v1/logs/download", a.downloadLog)
 	adm("GET /api/v1/backup", a.backup)
@@ -269,9 +257,6 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"id": p.UserID, "name": p.Name, "isAdmin": p.IsAdmin, "scope": p.Scope,
 		"mustChangePassword": p.MustChangePassword, "mfaSetupRequired": p.MFASetupRequired, "version": version, "session": p.Session,
-	}
-	if p.TokenID != "" {
-		out["tokenId"] = p.TokenID // lets an app find its own token in /tokens
 	}
 	if _, u := a.store.Get().userByID(p.UserID); u != nil {
 		out["username"], out["note"], out["created"] = u.Username, u.Note, u.Created
@@ -1008,15 +993,14 @@ func (a *App) issueConfig(w http.ResponseWriter, r *http.Request) {
 func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 	cfg := a.store.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"web":           cfg.Web,
-		"log":           cfg.Log,
-		"stats":         cfg.Stats,
-		"decoy":         cfg.Decoy,
-		"signin":        cfg.SignIn,
-		"geo":           a.geoStatus(),
-		"adminUsername": a.username(cfg, who(r).UserID), // kept for older iOS app versions
-		"fingerprint":   a.tls.Fingerprint(),
-		"logPath":       a.logPath,
+		"web":         cfg.Web,
+		"log":         cfg.Log,
+		"stats":       cfg.Stats,
+		"decoy":       cfg.Decoy,
+		"signin":      cfg.SignIn,
+		"geo":         a.geoStatus(),
+		"fingerprint": a.tls.Fingerprint(),
+		"logPath":     a.logPath,
 	})
 }
 
@@ -1026,8 +1010,8 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if _, ok := m["adminUsername"]; ok {
-		writeErr(w, badRequest("usernames are changed under /users"))
+	if _, ok := m["signin"]; ok && !who(r).IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "API tokens cannot change the sign-in rules; sign in to the web interface"})
 		return
 	}
 	var restart bool
