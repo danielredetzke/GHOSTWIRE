@@ -353,7 +353,7 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 	d30, u30 := sumPoints(a.stats.series(nil, "30d"))
 	checks := a.kernel.Checks(cfg)
 	last, applyErr := a.recon.Status()
-	ac := Check{Name: "Last apply", OK: applyErr == nil, Detail: "applied " + last.Format(time.RFC3339)}
+	ac := Check{Name: "Kernel in sync", OK: applyErr == nil, Detail: "applied " + last.Format(time.RFC3339)}
 	if applyErr != nil {
 		ac.Detail = applyErr.Error()
 	}
