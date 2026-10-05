@@ -164,6 +164,7 @@ sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -p
 | `-endpoint` | the domain |
 | `-port` | 51820, or the current port when already installed |
 | `-import-pivpn` | off: see [Moving from pivpn](#moving-from-pivpn) |
+| `-no-wait` | off: after a pivpn takeover, don't wait for devices to reconnect |
 
 The admin password is then read from standard input, e.g.
 `echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`. Every value is checked
@@ -203,7 +204,8 @@ After the summary, install notes which peers are connected, stops pivpn's
 WireGuard (`systemctl disable --now wg-quick@wg0`), starts GHOSTWIRE on the
 same `wg0` and waits up to 30 s for those peers to come back. Devices that
 send traffic reconnect after about 15 s; an idle device reconnects the next
-time it sends something. If the service does not stay running, install puts
+time it sends something. The wait only reports: Enter skips it, and so does
+`-no-wait` in scripts. If the service does not stay running, install puts
 pivpn back as it was.
 
 Without a terminal, the takeover needs `-import-pivpn`; install refuses to
@@ -216,7 +218,7 @@ to pivpn: `GHOSTWIRE uninstall`, then `systemctl enable --now wg-quick@wg0`.
 
 | Command | What it does |
 |---|---|
-| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-import-pivpn] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. On a pivpn server it takes over pivpn's WireGuard (see above). |
+| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-import-pivpn] [-no-wait] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. On a pivpn server it takes over pivpn's WireGuard (see above). |
 | `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>` (keeping the newest 3 such copies), replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
 | `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
 | `GHOSTWIRE passwd [username]` | Sets a user's password (default: the first user) and reloads the running service. The way back in if you are locked out. |

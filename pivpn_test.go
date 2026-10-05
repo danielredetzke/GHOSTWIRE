@@ -298,3 +298,38 @@ func TestPeerIPv6Kept(t *testing.T) {
 		t.Error("an IPv6 address used twice should be refused")
 	}
 }
+
+func TestPivpnWaitBack(t *testing.T) {
+	pv := &pivpnSetup{Peers: []Peer{{Name: "a", PublicKey: "ka"}, {Name: "b", PublicKey: "kb"}}}
+	since := time.Now()
+	after := since.Add(time.Second)
+	sample := func(back ...string) func() ([]PeerSample, error) {
+		return func() ([]PeerSample, error) {
+			var out []PeerSample
+			for _, k := range back {
+				out = append(out, PeerSample{PublicKey: k, LastHandshake: after})
+			}
+			// A handshake from before the switch does not count.
+			return append(out, PeerSample{PublicKey: "kb", LastHandshake: since.Add(-time.Minute)}), nil
+		}
+	}
+	// Everyone back: returns at once.
+	start := time.Now()
+	back, skipped := waitBack(pv, []string{"a", "b"}, sample("ka", "kb"), since, time.Minute, time.Millisecond, nil)
+	if len(back) != 2 || skipped || time.Since(start) > time.Second {
+		t.Fatalf("all back: %v %v", back, skipped)
+	}
+	// One missing: waits for the timeout.
+	back, skipped = waitBack(pv, []string{"a", "b"}, sample("ka"), since, 50*time.Millisecond, 5*time.Millisecond, nil)
+	if len(back) != 1 || back[0] != "a" || skipped {
+		t.Fatalf("timeout: %v %v", back, skipped)
+	}
+	// Enter: returns at once, marked skipped.
+	skip := make(chan struct{})
+	close(skip)
+	start = time.Now()
+	back, skipped = waitBack(pv, []string{"a", "b"}, sample("ka"), time.Now(), time.Minute, time.Second, skip)
+	if !skipped || time.Since(start) > time.Second {
+		t.Fatalf("skip: %v %v", back, skipped)
+	}
+}

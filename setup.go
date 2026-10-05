@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"crypto/sha256"
@@ -38,7 +39,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `%s %s — WireGuard server manager
 
 Usage (as root):
-  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host] [-port 51820] [-import-pivpn] [-y]
+  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host] [-port 51820] [-import-pivpn] [-no-wait] [-y]
         set up user, folder, config, sysctls and systemd service; start it.
         In a terminal it asks for the settings no flag gave; -y never asks.
         On a pivpn server it offers to take over pivpn's WireGuard and clients
@@ -382,6 +383,7 @@ func cmdInstall(args []string) error {
 	port := fs.Int("port", 0, "UDP port WireGuard listens on (default: 51820, or the current port when already installed)")
 	yes := fs.Bool("y", false, "do not ask; use the flags and defaults")
 	importPivpn := fs.Bool("import-pivpn", false, "take over pivpn's WireGuard server and clients (new installs only)")
+	noWait := fs.Bool("no-wait", false, "after a pivpn takeover, do not wait for connected devices to come back")
 	_ = fs.Parse(args)
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -553,7 +555,7 @@ func cmdInstall(args []string) error {
 		return err
 	}
 	if pv != nil {
-		waitForPeers(pv, connected, switched)
+		waitForPeers(pv, connected, switched, *noWait, interactive)
 	}
 	printWhereToGo(store.Get())
 	if pv != nil {
@@ -589,26 +591,70 @@ func pivpnConnected(pv *pivpnSetup) []string {
 
 // waitForPeers waits up to 30 s for the peers that were connected to pivpn
 // to make a handshake with the new service. It only reports: a device that
-// is idle may take minutes to send its next packet.
-func waitForPeers(pv *pivpnSetup, names []string, since time.Time) {
-	if len(names) == 0 {
+// is idle may take minutes to send its next packet. Enter in a terminal
+// skips the rest of the wait; -no-wait skips it entirely.
+func waitForPeers(pv *pivpnSetup, names []string, since time.Time, noWait, interactive bool) {
+	switch {
+	case len(names) == 0:
 		step("No peer was connected before the switch; devices connect when they come back online.")
 		return
-	}
-	key := map[string]string{}
-	for _, p := range pv.Peers {
-		key[p.Name] = p.PublicKey
+	case noWait:
+		step("Not waiting for %s (-no-wait).", strings.Join(names, ", "))
+		fmt.Printf("  %s\n", onlineLater(len(names)))
+		return
 	}
 	k, err := newKernel()
 	if err != nil {
 		return
 	}
 	defer k.Close()
-	var back []string
-	deadline := since.Add(30 * time.Second)
+	var skip <-chan struct{}
+	hint := ""
+	if interactive {
+		ch := make(chan struct{})
+		go func() {
+			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+			close(ch)
+		}()
+		skip, hint = ch, " (Enter skips)"
+	}
+	step("Waiting up to 30 s for %s to come back%s", strings.Join(names, ", "), hint)
+	back, skipped := waitBack(pv, names, func() ([]PeerSample, error) { return k.Sample(pv.Dev) }, since, 30*time.Second, 2*time.Second, skip)
+	secs := int(time.Since(since).Round(time.Second).Seconds())
+	var missing []string
+	for _, n := range names {
+		if !slices.Contains(back, n) {
+			missing = append(missing, n)
+		}
+	}
+	switch {
+	case len(missing) == 0:
+		step("%d of %d peers that were connected before are back (after %d s)", len(back), len(names), secs)
+		return
+	case skipped:
+		step("Skipped after %d s: %d of %d back so far", secs, len(back), len(names))
+		fmt.Printf("  %s not back yet.\n  %s\n", strings.Join(missing, ", "), onlineLater(len(missing)))
+	default:
+		step("%d of %d are back after %d s", len(back), len(names), secs)
+		fmt.Printf("  %s not back yet. A device that is idle can take a few minutes to send its next\n", strings.Join(missing, ", "))
+		fmt.Printf("  packet. %s\n", onlineLater(len(missing)))
+	}
+}
+
+// waitBack polls the kernel until every named peer made a handshake after
+// since, the timeout passes or skip is closed. It returns the peers that are
+// back and whether the wait was skipped.
+func waitBack(pv *pivpnSetup, names []string, sample func() ([]PeerSample, error), since time.Time, timeout, every time.Duration, skip <-chan struct{}) (back []string, skipped bool) {
+	key := map[string]string{}
+	for _, p := range pv.Peers {
+		key[p.Name] = p.PublicKey
+	}
+	deadline := time.After(time.Until(since.Add(timeout)))
+	tick := time.NewTicker(every)
+	defer tick.Stop()
 	for {
 		back = back[:0]
-		if samples, err := k.Sample(pv.Dev); err == nil {
+		if samples, err := sample(); err == nil {
 			for _, n := range names {
 				for _, s := range samples {
 					if s.PublicKey == key[n] && s.LastHandshake.After(since) {
@@ -617,25 +663,25 @@ func waitForPeers(pv *pivpnSetup, names []string, since time.Time) {
 				}
 			}
 		}
-		if len(back) == len(names) || time.Now().After(deadline) {
-			break
+		if len(back) == len(names) {
+			return back, false
 		}
-		time.Sleep(2 * time.Second)
-	}
-	secs := int(time.Since(since).Round(time.Second).Seconds())
-	if len(back) == len(names) {
-		step("Waiting for them to come back: %d of %d peers that were connected before are back (after %d s)", len(back), len(names), secs)
-		return
-	}
-	step("Waiting for them to come back: %d of %d are back after %d s", len(back), len(names), secs)
-	var missing []string
-	for _, n := range names {
-		if !slices.Contains(back, n) {
-			missing = append(missing, n)
+		select {
+		case <-skip:
+			return back, true
+		case <-deadline:
+			return back, false
+		case <-tick.C:
 		}
 	}
-	fmt.Printf("  %s not back yet. A device that is idle can take a few minutes to send its next\n", strings.Join(missing, ", "))
-	fmt.Println("  packet. It shows as online on the Peers page once it is back.")
+}
+
+// onlineLater tells where peers that are not back yet will show up.
+func onlineLater(n int) string {
+	if n == 1 {
+		return "It shows as online on the Peers page once it is back."
+	}
+	return "They show as online on the Peers page once they are back."
 }
 
 // pivpnBack undoes the takeover after the service failed to start: it stops
