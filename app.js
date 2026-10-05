@@ -1206,7 +1206,6 @@
       const online = peers.filter((p) => p.stats.online)
         .map((p) => ({ p, r: last[p.id] || [0, 0], hist: pts.map((x) => { const v = x.peers[p.id]; return v ? v[0] + v[1] : 0; }) }))
         .sort((a, b) => (b.r[0] + b.r[1]) - (a.r[0] + a.r[1]) || a.p.name.localeCompare(b.p.name));
-      const offline = peers.filter((p) => !p.stats.online);
       const rate = (v, idle) => idle ? h('span', { class: 'muted' }, '–') : h('span', { class: 'mono' }, fmtRate(v));
       rows.replaceChildren(
         online.length ? h('div', { class: 'tbl' }, h('table', { class: 'narrow' },
@@ -1220,8 +1219,7 @@
               h('td', { class: 'num' }, rate(r[1], idle)),
               h('td', null, h('span', { class: 'mono' }, p.stats.endpoint ? p.stats.endpoint.replace(/:\d+$/, '') : '–'),
                 p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null));
-          })))) : h('p', { class: 'empty' }, 'No peer is online.'),
-        offline.length ? h('p', { class: 'liveoff' }, 'Offline: ', offline.map((p, i) => [i ? ', ' : '', h('a', { href: '#/peers/' + p.id }, p.name)])) : null);
+          })))) : h('p', { class: 'empty' }, 'No peer is online.'));
     };
 
     fill(wrap,

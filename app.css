@@ -399,7 +399,6 @@ tr.idle td { color: var(--ink-3); }
 tr.idle .spark polyline { stroke: var(--ink-3); }
 tr.idle .spark .fill { fill: var(--ink-3); }
 td .mono, td.num .mono { font-variant-numeric: tabular-nums; }
-.liveoff { margin: 0; padding: 12px; font-size: 13px; color: var(--ink-3); }
 .livesub { display: flex; align-items: center; gap: 6px; }
 .dot.pulse { animation: pulse 2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
