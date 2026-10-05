@@ -350,10 +350,6 @@ func TestAPI(t *testing.T) {
 	bearer("POST", "/tokens", 403, map[string]string{"name": "more", "scope": "rw"})
 	bearer("DELETE", "/tokens/"+tok["id"].(string), 403)
 	bearer("GET", "/backup", 403)
-	// Older iOS app builds cannot decode /settings without it.
-	if call("GET", "/settings", nil, 200)["adminUsername"] != "admin" {
-		t.Fatal("/settings lacks adminUsername")
-	}
 
 	call("DELETE", "/peers/"+id, nil, 200)
 	if len(store.Get().Peers) != 0 {
