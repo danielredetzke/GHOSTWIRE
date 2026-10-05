@@ -1511,9 +1511,9 @@
   const DNS_PRESETS = [['Quad9', '9.9.9.9, 149.112.112.112']];
 
   // healthParts turns the server's checks into the Health card: the public
-  // address per IP family (from its uplink and public address checks), then
-  // one tile per other check with a plain-word status, the raw setting and,
-  // when it fails, what is wrong.
+  // address per IP family (from its uplink and public address checks) and,
+  // beside them, one row per other check with a plain-word status, the raw
+  // setting and, when it fails, what is wrong.
   function healthParts(checks) {
     const by = Object.fromEntries(checks.map((c) => [c.name, c]));
     const addrs = [];
@@ -1563,14 +1563,14 @@
     return h('section', { class: 'card', 'aria-labelledby': 'hc' },
       h('div', { class: 'hchead' }, h('h2', { id: 'hc' }, 'Health'),
         h('span', { class: hp.failing ? 'bad' : null }, hp.failing ? hp.failing + ' of ' + hp.total + ' checks failing' : 'All ' + hp.total + ' checks pass')),
+      h('div', { class: 'hcbody' },
       hp.addrs.length ? h('div', { class: 'hcaddrs' }, hp.addrs.map((a) => h('div', { class: a.ok ? 'hcaddr' : 'hcaddr bad' },
         h('div', { class: 'l' }, dot(a.ok), a.label),
         h('div', { class: a.mono ? 'v mono' : 'v' }, a.value, a.note ? h('span', { class: 'n' }, ' ' + a.note) : null)))) : null,
-      h('div', { class: 'hctiles' }, hp.tiles.map((t) => h('div', { class: t.ok ? 'hctile' : 'hctile bad', title: t.title || null },
-        h('div', { class: 'l' }, h('span', null, t.label), dot(t.ok)),
-        h('div', { class: 's' }, t.status),
-        t.raw ? h('div', { class: 'r mono' }, t.raw) : null,
-        t.problem ? h('div', { class: 'p' }, t.problem) : null))));
+      h('div', { class: 'hclist' }, hp.tiles.map((t) => h('div', { class: t.ok ? 'hcrow' : 'hcrow bad', title: t.title || null },
+        dot(t.ok), h('span', { class: 'l' }, t.label),
+        h('span', { class: 'v' }, h('span', { class: 's' }, t.status), t.raw ? h('span', { class: 'r mono' }, t.raw) : null),
+        t.problem ? h('div', { class: 'p' }, t.problem) : null)))));
   }
 
   async function viewServer(wrap) {
