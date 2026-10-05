@@ -20,6 +20,12 @@ On a Linux server, run:
 curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
 ```
 
+or the same script from the GitHub mirror:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/danielredetzke/GHOSTWIRE/main/install.sh | sh
+```
+
 It downloads the latest release for the server's architecture, checks it
 against `SHA256SUMS` and starts the [install](#install), which asks a few
 questions and changes nothing until you confirm.
