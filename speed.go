@@ -30,11 +30,31 @@ type Speeds struct {
 	last   map[string][2]int64 // raw rx, tx by public key
 	lastAt time.Time
 	points []SpeedPoint
+	subs   map[chan SpeedPoint]struct{}
+	done   chan struct{} // closed when Run returns
 }
 
 func newSpeeds(store *Store, kernel Kernel) *Speeds {
-	return &Speeds{store: store, kernel: kernel, last: map[string][2]int64{}}
+	return &Speeds{store: store, kernel: kernel, last: map[string][2]int64{}, subs: map[chan SpeedPoint]struct{}{}, done: make(chan struct{})}
 }
+
+// Subscribe returns the current points and a channel that receives each new
+// one; cancel ends the subscription. A subscriber that falls behind misses
+// points rather than holding up the sampler.
+func (s *Speeds) Subscribe() (points []SpeedPoint, ch <-chan SpeedPoint, cancel func()) {
+	c := make(chan SpeedPoint, 4)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs[c] = struct{}{}
+	return append([]SpeedPoint{}, s.points...), c, func() {
+		s.mu.Lock()
+		delete(s.subs, c)
+		s.mu.Unlock()
+	}
+}
+
+// Done is closed when the sampler stops, so streams can end.
+func (s *Speeds) Done() <-chan struct{} { return s.done }
 
 func (s *Speeds) sample(now time.Time) {
 	cfg := s.store.Get()
@@ -77,6 +97,12 @@ func (s *Speeds) sample(now time.Time) {
 	if len(s.points) > speedPoints {
 		s.points = s.points[len(s.points)-speedPoints:]
 	}
+	for c := range s.subs {
+		select {
+		case c <- pt:
+		default:
+		}
+	}
 }
 
 // Since returns the points newer than the unix time t, oldest first.
@@ -93,6 +119,7 @@ func (s *Speeds) Since(t int64) []SpeedPoint {
 }
 
 func (s *Speeds) Run(stop <-chan struct{}) {
+	defer close(s.done)
 	s.sample(time.Now())
 	t := time.NewTicker(speedStep)
 	defer t.Stop()

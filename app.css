@@ -391,6 +391,7 @@ pre.log.tall { max-height: calc(100vh - 260px); min-height: 420px; }
 .chart .ldown, .chart .lup { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .chart .ldown { stroke: var(--down); }
 .chart .lup { stroke: var(--up); }
+.chart .plot.live svg { overflow: hidden; }
 .xaxis.lx span:first-child { transform: none; }
 .xaxis.lx span:last-child { transform: translateX(-100%); }
 .spark.wide { width: 96px; }

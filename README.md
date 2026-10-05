@@ -267,6 +267,7 @@ signed in: POST /auth/mfa/keys/begin · /auth/mfa/keys/finish?name= · PATCH|DEL
 signed in: POST /auth/mfa/recovery-codes
 GET    /status                           GET /stats?range=24h|7d|30d|90d
 GET    /live?since=                      (speed per peer, last 2 minutes in 2-second steps)
+GET    /live/stream                      (the same as server-sent events)
 GET    /server         PATCH /server     POST /server/rotate-key     GET /server/detect-ip
 GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
@@ -298,7 +299,9 @@ downloaded, `up` is what it uploaded.
 
 `GET /live` answers `{"step": 2, "size": 60, "points": [{"t": …, "peers":
 {"<id>": [down, up]}}]}` with speeds in bits per second, kept only in memory.
-With `since` (unix seconds) it returns only newer steps.
+With `since` (unix seconds) it returns only newer steps. `GET /live/stream`
+sends the same messages as server-sent events: the history first, then one
+message per new step.
 
 Latency is measured by pinging the peer's tunnel address every 30 seconds. Set
 it per peer with `PATCH /peers/{id}` `{"latencyCheck": "off"|"active"|"always"}`

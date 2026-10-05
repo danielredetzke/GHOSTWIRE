@@ -146,6 +146,7 @@ func (a *App) routes() http.Handler {
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
 	g("GET /api/v1/live", a.liveSpeeds)
+	g("GET /api/v1/live/stream", a.liveStream)
 
 	g("GET /api/v1/server", a.getServer)
 	g("PATCH /api/v1/server", a.patchServer)
@@ -410,6 +411,48 @@ func (a *App) liveSpeeds(w http.ResponseWriter, r *http.Request) {
 		points = a.speeds.Since(since)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"step": int(speedStep / time.Second), "size": speedPoints, "points": points})
+}
+
+// liveStream sends the same data as server-sent events: the current points
+// first, then each new step as soon as it is sampled. The session is checked
+// again with every step, so signing out ends the stream.
+func (a *App) liveStream(w http.ResponseWriter, r *http.Request) {
+	if a.speeds == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "live speeds are not available"})
+		return
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{}) // the server's write timeout would cut the stream
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no") // nginx: do not buffer
+	points, ch, cancel := a.speeds.Subscribe()
+	defer cancel()
+	send := func(points []SpeedPoint) bool {
+		b, _ := json.Marshal(map[string]any{"step": int(speedStep / time.Second), "size": speedPoints, "points": points})
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	if !send(points) {
+		return
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-a.speeds.Done():
+			return
+		case pt := <-ch:
+			if _, ok := a.auth.Authenticate(r); !ok {
+				return
+			}
+			if !send([]SpeedPoint{pt}) {
+				return
+			}
+		}
+	}
 }
 
 func (a *App) peerStats(w http.ResponseWriter, r *http.Request) {

@@ -1308,6 +1308,8 @@ func TestSpeeds(t *testing.T) {
 		k.samples = []PeerSample{{PublicKey: pub, RxBytes: rx, TxBytes: tx}}
 		sp.sample(t0.Add(time.Duration(sec) * time.Second))
 	}
+	_, ch, cancel := sp.Subscribe()
+	defer cancel()
 	step(0, 1000, 1000)
 	if n := len(sp.Since(0)); n != 0 {
 		t.Fatalf("first sample made %d points, want 0", n)
@@ -1320,6 +1322,9 @@ func TestSpeeds(t *testing.T) {
 	}
 	if got, want := pts[0].Peers["p1"], [2]int64{8000, 1000}; got != want {
 		t.Fatalf("speed = %v, want %v (down, up in bit/s)", got, want)
+	}
+	if got := <-ch; got.T != pts[0].T {
+		t.Fatalf("subscriber got step %d, want %d", got.T, pts[0].T)
 	}
 	if _, ok := pts[1].Peers["p1"]; ok {
 		t.Fatal("a counter reset reported a speed")
