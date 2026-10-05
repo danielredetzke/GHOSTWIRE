@@ -1020,12 +1020,16 @@
 
   // ---------- dashboard ----------
 
+  // RANGES are the time ranges offered above the traffic charts.
+  const RANGES = [['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days']];
+
   async function viewDashboard(wrap) {
+    let range = '24h';
     const draw = async () => {
       const [st, pl, stats, logs] = await Promise.all([
         api('GET', '/status'),
         api('GET', '/peers'),
-        api('GET', '/stats?range=24h'),
+        api('GET', '/stats?range=' + range),
         me.isAdmin ? api('GET', '/logs?audit=1&limit=6').catch(() => null) : null,
       ]);
       const peers = pl.peers;
@@ -1062,8 +1066,10 @@
             h('div', { class: 's' }, 'Service up ' + ago(st.started).replace(' ago', '') + ' · ' + (st.healthy ? 'all checks pass' : failing.length + ' check(s) failing')))),
 
         h('section', { class: 'card', 'aria-labelledby': 'tput' },
-          h('div', { class: 'cardhead' }, h('h2', { id: 'tput' }, 'Traffic, all peers · last 24 hours')),
-          chart(stats.points, '24h', 'total', true)),
+          h('div', { class: 'cardhead' }, h('h2', { id: 'tput' }, 'Traffic, all peers'),
+            h('div', { class: 'pills', role: 'group', 'aria-label': 'Time range' }, RANGES.map(([k, t]) =>
+              h('button', { type: 'button', class: range === k ? 'pill on' : 'pill', 'aria-pressed': String(range === k), onClick: () => { range = k; draw().catch(() => {}); } }, t)))),
+          chart(stats.points, range, 'total', true)),
 
         h('div', { class: 'cols' },
           h('section', { class: 'card flush' },
@@ -1375,7 +1381,7 @@
     };
 
     async function drawTraffic() {
-      pills.replaceChildren(...[['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days']].map(([k, t]) =>
+      pills.replaceChildren(...RANGES.map(([k, t]) =>
         h('button', { type: 'button', class: range === k ? 'pill on' : 'pill', 'aria-pressed': String(range === k), onClick: () => { range = k; drawTraffic(); } }, t)));
       const s = await api('GET', '/peers/' + id + '/stats?range=' + range);
       const down = s.points.reduce((a, x) => a + x.down, 0), up = s.points.reduce((a, x) => a + x.up, 0);
