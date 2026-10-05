@@ -1001,6 +1001,9 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"geo":         a.geoStatus(),
 		"fingerprint": a.tls.Fingerprint(),
 		"logPath":     a.logPath,
+		// Required by iOS app builds before 2c9cc1c, which App Review
+		// still tests.
+		"adminUsername": a.username(cfg, who(r).UserID),
 	})
 }
 
