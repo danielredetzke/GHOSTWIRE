@@ -1353,7 +1353,7 @@
       sessMore.textContent = allSessions ? 'Show fewer' : 'Show all ' + sessions.length;
     };
     drawSessions();
-    let range = '7d';
+    let range = '24h';
     const st = peerState(p);
     const traffic = h('div');
     const totals = h('div', { class: 'legend-row' });
