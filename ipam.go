@@ -122,6 +122,15 @@ func nextFreeIPv4(c *Config) (netip.Addr, error) {
 // capacity is the number of peer addresses in the tunnel network.
 func capacity(n netip.Prefix) int { return 1<<(32-n.Bits()) - 3 }
 
+// peerIPv6 is the peer's IPv6 tunnel address: the one kept from pivpn, or
+// the one mapped from its IPv4 address.
+func peerIPv6(c *Config, p *Peer) netip.Addr {
+	if a, err := netip.ParseAddr(p.IPv6); err == nil {
+		return a
+	}
+	return mapIPv6(netip.MustParsePrefix(c.Server.IPv6), netip.MustParseAddr(p.IPv4))
+}
+
 // mapIPv6 puts the 32 bits of an IPv4 address into the low bits of the IPv6
 // network: 10.84.12.8 in fd11:5ee:bad:c0de::/64 becomes fd11:5ee:bad:c0de::a54:c08.
 func mapIPv6(v6net netip.Prefix, v4 netip.Addr) netip.Addr {

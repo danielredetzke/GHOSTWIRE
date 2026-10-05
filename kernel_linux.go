@@ -368,8 +368,10 @@ func (k *linuxKernel) Checks(c *Config) []Check {
 
 func (k *linuxKernel) Down(c *Config) error {
 	var errs []error
-	if link, err := netlink.LinkByName(c.Server.Interface); err == nil {
-		errs = append(errs, netlink.LinkDel(link))
+	if c.Server.Interface != "" {
+		if link, err := netlink.LinkByName(c.Server.Interface); err == nil {
+			errs = append(errs, netlink.LinkDel(link))
+		}
 	}
 	errs = append(errs, removeFirewall())
 	return errors.Join(errs...)

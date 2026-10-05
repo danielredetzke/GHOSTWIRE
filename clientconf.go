@@ -52,7 +52,7 @@ func peerAddresses(c *Config, p *Peer) []netip.Prefix {
 	v4 := netip.MustParseAddr(p.IPv4)
 	out := []netip.Prefix{netip.PrefixFrom(v4, 32)}
 	if c.Server.IPv6Enabled {
-		out = append(out, netip.PrefixFrom(mapIPv6(netip.MustParsePrefix(c.Server.IPv6), v4), 128))
+		out = append(out, netip.PrefixFrom(peerIPv6(c, p), 128))
 	}
 	return out
 }
@@ -77,7 +77,7 @@ func clientConfig(c *Config, p *Peer, privateKey string) string {
 	addr := fmt.Sprintf("%s/%d", v4, v4net.Bits())
 	if c.Server.IPv6Enabled {
 		v6net := netip.MustParsePrefix(c.Server.IPv6)
-		addr += fmt.Sprintf(",%s/%d", mapIPv6(v6net, v4), v6net.Bits())
+		addr += fmt.Sprintf(",%s/%d", peerIPv6(c, p), v6net.Bits())
 	}
 	if privateKey == "" {
 		privateKey = "<the private key of this device>"

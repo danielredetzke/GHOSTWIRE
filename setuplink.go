@@ -260,7 +260,7 @@ func (a *App) setupRedeem(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC()
 		id, hadKey = p.ID, p.hasKey()
-		p.PublicKey, p.ConfigIssued, p.Setup = k.PublicKey().String(), &now, nil
+		p.PublicKey, p.ConfigIssued, p.Setup, p.IPv6 = k.PublicKey().String(), &now, nil, ""
 		if p.PresharedKey != "" {
 			p.PresharedKey = psk.String()
 		}

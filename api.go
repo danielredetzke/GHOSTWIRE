@@ -560,7 +560,7 @@ func (a *App) patchServer(w http.ResponseWriter, r *http.Request) {
 	err = a.store.Update(func(c *Config) error {
 		s := &c.Server
 		before := s.clientFacing()
-		oldV4 := s.IPv4
+		oldV4, oldV6 := s.IPv4, s.IPv6
 		for _, f := range []struct {
 			key string
 			dst any
@@ -581,6 +581,11 @@ func (a *App) patchServer(w http.ResponseWriter, r *http.Request) {
 		if s.IPv4 != oldV4 {
 			if err := renumberPeers(c, oldV4); err != nil {
 				return err
+			}
+		}
+		if s.IPv6 != oldV6 {
+			for i := range c.Peers {
+				c.Peers[i].IPv6 = "" // pivpn's addresses are in the old network
 			}
 		}
 		reissue = before != s.clientFacing()
@@ -703,7 +708,7 @@ func (a *App) peerView(c *Config, p *Peer) peerView {
 		Created:      p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
 	}
 	if c.Server.IPv6Enabled {
-		v.IPv6 = mapIPv6(netip.MustParsePrefix(c.Server.IPv6), netip.MustParseAddr(p.IPv4)).String()
+		v.IPv6 = peerIPv6(c, p).String()
 	}
 	return v
 }
@@ -1037,7 +1042,8 @@ func (a *App) issueConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		now := time.Now().UTC()
 		// A config issued here replaces any pending link.
-		p.PublicKey, p.ConfigIssued, p.Setup, name = pub, &now, nil, p.Name
+		// The new config gets the mapped IPv6 address.
+		p.PublicKey, p.ConfigIssued, p.Setup, p.IPv6, name = pub, &now, nil, "", p.Name
 		if p.PresharedKey != "" {
 			p.PresharedKey = psk.String()
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"errors"
 	"flag"
@@ -37,9 +38,10 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `%s %s — WireGuard server manager
 
 Usage (as root):
-  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host] [-port 51820] [-y]
+  %s install [-domain vpn.example.net] [-email you@example.net] [-endpoint host] [-port 51820] [-import-pivpn] [-y]
         set up user, folder, config, sysctls and systemd service; start it.
-        In a terminal it asks for the settings no flag gave; -y never asks
+        In a terminal it asks for the settings no flag gave; -y never asks.
+        On a pivpn server it offers to take over pivpn's WireGuard and clients
   %s update [-force]
         replace the installed binary with this one and restart
   %s uninstall [-purge] [-y]
@@ -379,6 +381,7 @@ func cmdInstall(args []string) error {
 	endpoint := fs.String("endpoint", "", "host or IP clients connect to (default: the domain)")
 	port := fs.Int("port", 0, "UDP port WireGuard listens on (default: 51820, or the current port when already installed)")
 	yes := fs.Bool("y", false, "do not ask; use the flags and defaults")
+	importPivpn := fs.Bool("import-pivpn", false, "take over pivpn's WireGuard server and clients (new installs only)")
 	_ = fs.Parse(args)
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
@@ -402,14 +405,40 @@ func cmdInstall(args []string) error {
 	if err := plan.check(); err != nil {
 		return err
 	}
+	interactive := !*yes && term.IsTerminal(int(os.Stdin.Fd()))
+
+	// pivpn: a new install takes over its WireGuard server, or stops, since
+	// both would run the same interface.
+	var pv *pivpnSetup
 	if !existing {
+		if pv, err = readPivpn("/"); err != nil {
+			return err
+		}
+	}
+	switch {
+	case *importPivpn && existing:
+		return fmt.Errorf("-import-pivpn works only on a new install, and %s exists", configFile)
+	case *importPivpn && pv == nil:
+		return fmt.Errorf("-import-pivpn: pivpn's WireGuard setup was not found (/%s)", pivpnSetupVars)
+	case pv != nil && !interactive && !*importPivpn:
+		return fmt.Errorf("pivpn runs WireGuard on %s here; add -import-pivpn to take it over, or remove pivpn first", pv.Dev)
+	}
+	if pv != nil {
+		pv.apply(cur)
+		if err := cur.validate(); err != nil {
+			return fmt.Errorf("pivpn's setup cannot be taken over, nothing changed: %w", err)
+		}
+		plan.pivpn = pv
+	}
+
+	if !existing && pv == nil {
 		n, err := randomSubnet(24)
 		if err != nil {
 			return err
 		}
 		plan.ipv4 = n.String()
 	}
-	if !*yes && term.IsTerminal(int(os.Stdin.Fd())) {
+	if interactive {
 		if plan, err = askInstall(os.Stdin, cur, existing, given, plan); err != nil {
 			return err
 		}
@@ -453,8 +482,15 @@ func cmdInstall(args []string) error {
 		}
 	}
 
-	// Config: created with defaults (server key, the chosen subnet) if missing.
-	if !existing {
+	// Config: created with defaults (server key, the chosen subnet) if
+	// missing, or with everything taken over from pivpn.
+	switch {
+	case pv != nil:
+		step("Creating %s from pivpn (%s)", configFile, plural(len(pv.Peers), "peer"))
+		if err := writeFileAtomic(configFile, cur, 0o600); err != nil {
+			return err
+		}
+	case !existing:
 		step("Creating %s", configFile)
 		initial := fmt.Sprintf("{\"server\": {\"ipv4\": %q}}\n", plan.ipv4)
 		if err := os.WriteFile(configFile, []byte(initial), 0o600); err != nil {
@@ -491,15 +527,133 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
+	// pivpn hands over its interface: note who is connected, then stop it.
+	var connected []string
+	var switched time.Time
+	if pv != nil {
+		connected = pivpnConnected(pv)
+		step("Peers connected to pivpn right now: %s", cmp.Or(strings.Join(connected, ", "), "none"))
+		step("Stopping pivpn's WireGuard (systemctl disable --now wg-quick@%s)", pv.Dev)
+		if err := sh("systemctl", "disable", "--now", "wg-quick@"+pv.Dev); err != nil {
+			return err
+		}
+		switched = time.Now()
+	}
+
 	step("Starting %s", serviceName)
-	if err := sh("systemctl", "enable", serviceName); err != nil {
+	err = sh("systemctl", "enable", serviceName)
+	if err == nil {
+		err = restartAndVerify()
+	}
+	if err != nil {
+		if pv != nil {
+			fmt.Fprintln(os.Stderr, " ", err)
+			return pivpnBack(pv, store.Get(), err)
+		}
 		return err
 	}
-	if err := restartAndVerify(); err != nil {
-		return err
+	if pv != nil {
+		waitForPeers(pv, connected, switched)
 	}
 	printWhereToGo(store.Get())
+	if pv != nil {
+		fmt.Printf("\npivpn is still installed but no longer runs %s. Manage the peers here from now on.\n", pv.Dev)
+		fmt.Printf("Its files in /etc/wireguard and /etc/pivpn are untouched, including the client\n")
+		fmt.Printf("configs with private keys. Once everything works, delete %s.\n", pv.ClientKeys)
+		fmt.Printf("Don't run \"pivpn uninstall\": it removes WireGuard packages and firewall rules.\n")
+	}
 	return nil
+}
+
+// pivpnConnected names the peers with a handshake in the last 3 minutes.
+func pivpnConnected(pv *pivpnSetup) []string {
+	k, err := newKernel()
+	if err != nil {
+		return nil
+	}
+	defer k.Close()
+	samples, err := k.Sample(pv.Dev)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range pv.Peers {
+		for _, s := range samples {
+			if s.PublicKey == p.PublicKey && !s.LastHandshake.IsZero() && time.Since(s.LastHandshake) < onlineWindow {
+				out = append(out, p.Name)
+			}
+		}
+	}
+	return out
+}
+
+// waitForPeers waits up to 30 s for the peers that were connected to pivpn
+// to make a handshake with the new service. It only reports: a device that
+// is idle may take minutes to send its next packet.
+func waitForPeers(pv *pivpnSetup, names []string, since time.Time) {
+	if len(names) == 0 {
+		step("No peer was connected before the switch; devices connect when they come back online.")
+		return
+	}
+	key := map[string]string{}
+	for _, p := range pv.Peers {
+		key[p.Name] = p.PublicKey
+	}
+	k, err := newKernel()
+	if err != nil {
+		return
+	}
+	defer k.Close()
+	var back []string
+	deadline := since.Add(30 * time.Second)
+	for {
+		back = back[:0]
+		if samples, err := k.Sample(pv.Dev); err == nil {
+			for _, n := range names {
+				for _, s := range samples {
+					if s.PublicKey == key[n] && s.LastHandshake.After(since) {
+						back = append(back, n)
+					}
+				}
+			}
+		}
+		if len(back) == len(names) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	secs := int(time.Since(since).Round(time.Second).Seconds())
+	if len(back) == len(names) {
+		step("Waiting for them to come back: %d of %d peers that were connected before are back (after %d s)", len(back), len(names), secs)
+		return
+	}
+	step("Waiting for them to come back: %d of %d are back after %d s", len(back), len(names), secs)
+	var missing []string
+	for _, n := range names {
+		if !slices.Contains(back, n) {
+			missing = append(missing, n)
+		}
+	}
+	fmt.Printf("  %s not back yet. A device that is idle can take a few minutes to send its next\n", strings.Join(missing, ", "))
+	fmt.Println("  packet. It shows as online on the Peers page once it is back.")
+}
+
+// pivpnBack undoes the takeover after the service failed to start: it stops
+// the service, removes its interface, firewall table and the config it was
+// given, and starts pivpn's WireGuard again. Without the config, the next
+// install offers the takeover again instead of fighting pivpn for wg0.
+func pivpnBack(pv *pivpnSetup, c *Config, cause error) error {
+	_ = sh("systemctl", "disable", "--now", serviceName)
+	if k, err := newKernel(); err == nil {
+		_ = k.Down(c)
+		k.Close()
+	}
+	_ = os.Remove(configFile)
+	step("Starting pivpn's WireGuard again (systemctl enable --now wg-quick@%s)", pv.Dev)
+	if err := sh("systemctl", "enable", "--now", "wg-quick@"+pv.Dev); err != nil {
+		return fmt.Errorf("install failed, and starting pivpn's WireGuard again failed too: %v (original error: %w)", err, cause)
+	}
+	return fmt.Errorf("install failed; pivpn runs %s as before: %w", pv.Dev, cause)
 }
 
 func chownTree(root string, uid, gid int) error {
@@ -663,9 +817,11 @@ func cmdUninstall(args []string) error {
 
 	step("Removing the WireGuard interface and firewall table")
 	c, err := loadConfigFile(configFile)
-	if err != nil {
+	if _, statErr := os.Stat(configFile); err != nil || statErr != nil {
+		// Without a config of ours, e.g. after a pivpn takeover was undone,
+		// the interface may belong to someone else: only the firewall table
+		// goes.
 		c = &Config{}
-		c.applyDefaults()
 	}
 	if k, err := newKernel(); err == nil {
 		if err := k.Down(c); err != nil {

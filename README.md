@@ -12,10 +12,19 @@ remove), hands out client configs as a download or QR code, and records traffic
 and connection history per peer. There are no install scripts and no
 dependencies on the server: the binary installs, updates and removes itself.
 
+> **Coming from pivpn?** GHOSTWIRE takes over a pivpn WireGuard server in one
+> command: `sudo ./GHOSTWIRE install`. Your phones and laptops keep their
+> current configs and reconnect on their own, with nothing to re-scan or
+> re-send. See [Moving from pivpn](#moving-from-pivpn).
+
 ![Dashboard with peers online, traffic of the last 24 hours, the peer list and recent activity](screenshots/dashboard.png)
 
 ## Features
 
+- **pivpn takeover:** install finds a pivpn WireGuard server and takes over
+  its key, networks and every client with its keys and addresses, so devices
+  keep working without new configs. pivpn comes back by itself if the switch
+  fails. [Details](#moving-from-pivpn).
 - **One file of state:** everything lives in `config.json`. The kernel is
   reconciled to it, so there is no `/etc/wireguard`, no `wg-quick` and no
   `wireguard-tools`.
@@ -154,6 +163,7 @@ sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -p
 | `-email` | none |
 | `-endpoint` | the domain |
 | `-port` | 51820, or the current port when already installed |
+| `-import-pivpn` | off: see [Moving from pivpn](#moving-from-pivpn) |
 
 The admin password is then read from standard input, e.g.
 `echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`. Every value is checked
@@ -179,11 +189,34 @@ Then open `https://vpn.example.net` and sign in as `admin`. Add more users
 under Settings → Users. Root is needed only for the commands below, never for
 the running service.
 
+## Moving from pivpn
+
+On a server that runs pivpn's WireGuard, a new install offers to take it
+over. Devices keep their current config: GHOSTWIRE takes pivpn's server key,
+port, MTU, tunnel networks (IPv4 and IPv6), endpoint, DNS, AllowedIPs and
+keepalive, and every client with its public key, preshared key and addresses.
+Clients pivpn switched off are imported switched off, with the note
+"Imported from pivpn". Client private keys, which pivpn keeps in
+`/etc/wireguard/configs`, are not read or stored.
+
+After the summary, install notes which peers are connected, stops pivpn's
+WireGuard (`systemctl disable --now wg-quick@wg0`), starts GHOSTWIRE on the
+same `wg0` and waits up to 30 s for those peers to come back. Devices that
+send traffic reconnect after about 15 s; an idle device reconnects the next
+time it sends something. If the service does not stay running, install puts
+pivpn back as it was.
+
+Without a terminal, the takeover needs `-import-pivpn`; install refuses to
+run next to pivpn otherwise. pivpn's files stay as they were. Manage peers in
+GHOSTWIRE from then on, delete `/etc/wireguard/configs` once everything works,
+and don't run `pivpn uninstall`, which removes WireGuard packages. To go back
+to pivpn: `GHOSTWIRE uninstall`, then `systemctl enable --now wg-quick@wg0`.
+
 ## Commands (as root)
 
 | Command | What it does |
 |---|---|
-| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. |
+| `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-import-pivpn] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. On a pivpn server it takes over pivpn's WireGuard (see above). |
 | `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>` (keeping the newest 3 such copies), replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
 | `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
 | `GHOSTWIRE passwd [username]` | Sets a user's password (default: the first user) and reloads the running service. The way back in if you are locked out. |

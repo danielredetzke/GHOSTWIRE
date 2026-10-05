@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -17,10 +18,11 @@ import (
 type installPlan struct {
 	domain, email, endpoint string
 	port                    int
-	noDomain                bool   // turn an existing domain off (self-signed certificate)
-	noEmail                 bool   // remove an existing Let's Encrypt email
-	passwordHash            string // asked in the terminal; empty: asked later
-	ipv4                    string // tunnel network of a new install
+	noDomain                bool        // turn an existing domain off (self-signed certificate)
+	noEmail                 bool        // remove an existing Let's Encrypt email
+	passwordHash            string      // asked in the terminal; empty: asked later
+	ipv4                    string      // tunnel network of a new install
+	pivpn                   *pivpnSetup // pivpn's WireGuard server to take over
 }
 
 var domainRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}$`)
@@ -80,6 +82,10 @@ func (p installPlan) changes() bool {
 	return p.domain != "" || p.email != "" || p.endpoint != "" || p.port != 0 || p.noDomain || p.noEmail || p.passwordHash != ""
 }
 
+// errPivpnDeclined ends an install whose admin keeps pivpn: both would use
+// the same interface.
+var errPivpnDeclined = errors.New("install cancelled; nothing was changed. GHOSTWIRE and pivpn cannot both run the WireGuard interface: remove pivpn first, or install again and take it over")
+
 func (p installPlan) apply(c *Config) {
 	if p.noDomain {
 		if c.Web.TLS.Mode == "acme" {
@@ -113,7 +119,7 @@ func (p installPlan) apply(c *Config) {
 // reissueCount is the number of devices whose config stops working because
 // the endpoint host or port changes.
 func (p installPlan) reissueCount(cur *Config, existing bool) int {
-	if !existing {
+	if !existing && p.pivpn == nil {
 		return 0
 	}
 	next := cur.clone()
@@ -187,6 +193,25 @@ func askInstall(in io.Reader, cur *Config, existing bool, given map[string]bool,
 		fmt.Println("Already installed: the current settings are in [brackets]. Press Enter to keep them.")
 	} else {
 		fmt.Println("Press Enter to accept the value in [brackets].")
+	}
+
+	// pivpn: taken over first, so its settings become the defaults below.
+	if p.pivpn != nil && !given["import-pivpn"] {
+		s := cur.Server
+		nets := s.IPv4
+		if s.IPv6Enabled {
+			nets += " + " + s.IPv6
+		}
+		fmt.Println("\npivpn found")
+		fmt.Printf("  %s · %s · UDP %d · %s\n", s.Interface, nets, s.ListenPort, cmp.Or(s.Endpoint, "no endpoint"))
+		fmt.Printf("  %s: %s\n", plural(len(p.pivpn.Peers), "client"), cmp.Or(p.pivpn.names(), "none"))
+		ok, err := pr.confirm("  Take over this WireGuard server? The devices keep working without new configs.")
+		if err != nil {
+			return p, err
+		}
+		if !ok {
+			return p, errPivpnDeclined
+		}
 	}
 
 	// Web interface
@@ -328,7 +353,7 @@ func askInstall(in io.Reader, cur *Config, existing bool, given map[string]bool,
 
 func printInstallSummary(cur *Config, existing bool, p installPlan) {
 	next := cur.clone()
-	if !existing {
+	if !existing && p.pivpn == nil {
 		next.Server.IPv4 = p.ipv4
 		next.Server.IPv6Enabled = hasGlobalIPv6()
 	}
@@ -366,7 +391,10 @@ func printInstallSummary(cur *Config, existing bool, p installPlan) {
 		ep += fmt.Sprintf("   (was %s — %d existing device(s) need a new config)", endpointString(cur), n)
 	}
 	tunnel := next.Server.IPv4
-	if !existing {
+	switch {
+	case p.pivpn != nil:
+		tunnel += " (from pivpn)"
+	case !existing:
 		tunnel += " (random free range)"
 	}
 	if next.Server.IPv6Enabled {
@@ -395,4 +423,21 @@ func printInstallSummary(cur *Config, existing bool, p installPlan) {
 	if p.passwordHash != "" {
 		fmt.Printf("  Admin           %s (password set)\n", next.Users[0].Username)
 	}
+	if pv := p.pivpn; pv != nil {
+		s := next.Server
+		fmt.Printf("  From pivpn      server key, %s with their keys and addresses,\n", plural(len(pv.Peers), "peer"))
+		fmt.Printf("                  DNS %s · keepalive %d s · MTU %d\n", strings.Join(s.ClientDefaults.DNS, ", "), s.ClientDefaults.Keepalive, s.MTU)
+		for _, r := range pv.Renamed {
+			fmt.Printf("  Renamed         %s → %s (names here: 1–32 letters, digits, . @ _ -)\n", r[0], r[1])
+		}
+		fmt.Printf("  Not taken       client private keys in %s (never stored here)\n", pv.ClientKeys)
+	}
+}
+
+// plural writes "1 peer" or "5 peers".
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return strconv.Itoa(n) + " " + word + "s"
 }

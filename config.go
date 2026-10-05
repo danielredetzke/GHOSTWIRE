@@ -172,16 +172,20 @@ type ClientDefaults struct {
 // Peer is one client. Its private key is never stored: it is shown once when
 // the config is issued.
 type Peer struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Note         string   `json:"note"`
-	Enabled      bool     `json:"enabled"`
-	PublicKey    string   `json:"publicKey"`
-	PresharedKey string   `json:"presharedKey,omitempty"`
-	IPv4         string   `json:"ipv4"`
-	DNS          []string `json:"dns,omitempty"`        // nil = server default
-	AllowedIPs   []string `json:"allowedIPs,omitempty"` // nil = server default
-	Keepalive    *int     `json:"keepalive,omitempty"`  // nil = server default
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Note         string `json:"note"`
+	Enabled      bool   `json:"enabled"`
+	PublicKey    string `json:"publicKey"`
+	PresharedKey string `json:"presharedKey,omitempty"`
+	IPv4         string `json:"ipv4"`
+	// IPv6 is set only for a peer imported from pivpn, which numbers IPv6
+	// differently: its device keeps the address until the config is issued
+	// here. Empty means the address mapped from IPv4 (see mapIPv6).
+	IPv6       string   `json:"ipv6,omitempty"`
+	DNS        []string `json:"dns,omitempty"`        // nil = server default
+	AllowedIPs []string `json:"allowedIPs,omitempty"` // nil = server default
+	Keepalive  *int     `json:"keepalive,omitempty"`  // nil = server default
 	// LatencyCheck says when the server pings the peer through the tunnel:
 	// "" (off), "active" (while the device sends traffic) or "always".
 	LatencyCheck string     `json:"latencyCheck,omitempty"`
@@ -473,6 +477,7 @@ func (c *Config) validate() error {
 
 	names := map[string]bool{}
 	ips := map[netip.Addr]bool{}
+	ips6 := map[netip.Addr]bool{}
 	keys := map[string]bool{}
 	for _, p := range c.Peers {
 		if err := validatePeerName(p.Name); err != nil {
@@ -493,6 +498,17 @@ func (c *Config) validate() error {
 			return fmt.Errorf("address %s is used twice", ip)
 		}
 		ips[ip] = true
+		if p.IPv6 != "" {
+			a, err := netip.ParseAddr(p.IPv6)
+			if err != nil || !a.Is6() || !v6.Contains(a) || a == v6.Addr() {
+				return fmt.Errorf("peer %q: IPv6 address %s is outside %s", p.Name, p.IPv6, v6)
+			}
+		}
+		if a := peerIPv6(c, &p); ips6[a] {
+			return fmt.Errorf("IPv6 address %s is used twice", a)
+		} else {
+			ips6[a] = true
+		}
 		if p.hasKey() && keys[p.PublicKey] {
 			return fmt.Errorf("peer %q: public key is used by another peer", p.Name)
 		}
