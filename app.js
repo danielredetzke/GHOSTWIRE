@@ -1107,13 +1107,36 @@
 
   // ---------- live ----------
 
-  // fmtRate formats a speed in bits per second.
+  // fmtRate formats a speed in bits per second, with one decimal from
+  // kbit/s up so the figures keep their shape as they change.
   function fmtRate(bps) {
     const u = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'];
     let i = 0, v = bps;
     while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
-    const s = i === 0 ? String(Math.round(v)) : v < 10 ? v.toFixed(1) : String(Math.round(v));
-    return s + ' ' + u[i];
+    return (i === 0 ? String(Math.round(v)) : v.toFixed(1)) + ' ' + u[i];
+  }
+
+  // curvePath draws a smooth line through the points (monotone cubic): it
+  // never dips below zero or rises above a peak between two steps.
+  function curvePath(xy) {
+    const n = xy.length;
+    if (n < 3) return 'M' + xy.map(([x, y]) => x.toFixed(1) + ',' + y.toFixed(2)).join('L');
+    const d = [], m = [];
+    for (let i = 0; i < n - 1; i++) d.push((xy[i + 1][1] - xy[i][1]) / (xy[i + 1][0] - xy[i][0]));
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
+      const a = m[i] / d[i], b = m[i + 1] / d[i], q = a * a + b * b;
+      if (q > 9) { const t = 3 / Math.sqrt(q); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+    }
+    let p = 'M' + xy[0][0].toFixed(1) + ',' + xy[0][1].toFixed(2);
+    for (let i = 0; i < n - 1; i++) {
+      const [x0, y0] = xy[i], [x1, y1] = xy[i + 1], k = (x1 - x0) / 3;
+      p += 'C' + (x0 + k).toFixed(1) + ',' + (y0 + m[i] * k).toFixed(2) + ' ' + (x1 - k).toFixed(1) + ',' + (y1 - m[i + 1] * k).toFixed(2) + ' ' + x1.toFixed(1) + ',' + y1.toFixed(2);
+    }
+    return p;
   }
 
   // Below this a peer counts as idle: keepalives and background chatter.
@@ -1133,9 +1156,9 @@
   function liveChart() {
     const W = 1000, H = 100;
     let pts = [], size = 60, step = 2, off = 0, dx = W / 59, t0 = 0, moving = false;
-    const area = svg('polygon', { class: 'larea' });
-    const down = svg('polyline', { class: 'ldown' });
-    const up = svg('polyline', { class: 'lup' });
+    const area = svg('path', { class: 'larea' });
+    const down = svg('path', { class: 'ldown' });
+    const up = svg('path', { class: 'lup' });
     const cursor = svg('line', { class: 'cursor', x1: 0, x2: 0, y1: 0, y2: H, visibility: 'hidden' });
     const g = svg('g', null, area, down, up, cursor);
     const plot = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', 'aria-hidden': 'true' }, g);
@@ -1181,15 +1204,16 @@
       // while sliding in.
       off = W - (n - 1) * dx + (moving ? dx : 0);
       const top = niceTop(Math.max(0, ...pts.map((p) => Math.max(p.down, p.up))) || 1e6);
-      const y = (v) => (H - v / top * H).toFixed(2);
-      const line = (k) => pts.map((p, i) => x(i).toFixed(1) + ',' + y(p[k])).join(' ');
+      const line = (k) => curvePath(pts.map((p, i) => [x(i), H - p[k] / top * H]));
       if (n > 1) {
-        area.setAttribute('points', x(0).toFixed(1) + ',' + H + ' ' + line('down') + ' ' + x(n - 1).toFixed(1) + ',' + H);
-        down.setAttribute('points', line('down'));
-        up.setAttribute('points', line('up'));
+        const dl = line('down');
+        area.setAttribute('d', dl + 'L' + x(n - 1).toFixed(1) + ',' + H + 'L' + x(0).toFixed(1) + ',' + H + 'Z');
+        down.setAttribute('d', dl);
+        up.setAttribute('d', line('up'));
       }
-      ylTop.textContent = fmtRate(top);
-      ylMid.textContent = fmtRate(top / 2);
+      // Axis values are round: no ".0".
+      ylTop.textContent = fmtRate(top).replace('.0 ', ' ');
+      ylMid.textContent = fmtRate(top / 2).replace('.0 ', ' ');
       g.style.transition = 'none';
       g.style.transform = 'translateX(0)';
       if (moving) {
