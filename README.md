@@ -28,6 +28,8 @@ dependencies on the server: the binary installs, updates and removes itself.
   server has a global IPv6 address.
 - **Traffic history:** kept in `stats.json`, hourly for 48 h and daily for
   400 days by default (Settings → Logs & history).
+- **Live view:** the speed of every peer right now, updated every 2 seconds,
+  with the last 2 minutes as a chart. Kept in memory only.
 - **Connection history:** every online session per peer, with start, duration,
   address and traffic. A new session starts when a device changes networks.
   Country and network operator come from the free
@@ -264,6 +266,7 @@ signed in: GET /auth/mfa · POST /auth/mfa/totp/setup · /auth/mfa/totp/confirm 
 signed in: POST /auth/mfa/keys/begin · /auth/mfa/keys/finish?name= · PATCH|DELETE /auth/mfa/keys/{id}
 signed in: POST /auth/mfa/recovery-codes
 GET    /status                           GET /stats?range=24h|7d|30d|90d
+GET    /live?since=                      (speed per peer, last 2 minutes in 2-second steps)
 GET    /server         PATCH /server     POST /server/rotate-key     GET /server/detect-ip
 GET    /peers          POST /peers       (returns the config and QR once)
 GET    /peers/{id}     PATCH /peers/{id} DELETE /peers/{id}
@@ -292,6 +295,10 @@ the newer version while there is one.
 
 Traffic is reported from the peer's point of view: `down` is what the peer
 downloaded, `up` is what it uploaded.
+
+`GET /live` answers `{"step": 2, "size": 60, "points": [{"t": …, "peers":
+{"<id>": [down, up]}}]}` with speeds in bits per second, kept only in memory.
+With `since` (unix seconds) it returns only newer steps.
 
 Latency is measured by pinging the peer's tunnel address every 30 seconds. Set
 it per peer with `PATCH /peers/{id}` `{"latencyCheck": "off"|"active"|"always"}`

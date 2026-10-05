@@ -1286,3 +1286,51 @@ func TestDropSecurityKeys(t *testing.T) {
 		t.Fatal("security key still in config.json")
 	}
 }
+
+func TestSpeeds(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := newPrivateKey()
+	pub := key.PublicKey().String()
+	if err := store.Update(func(c *Config) error {
+		c.Peers = append(c.Peers, Peer{ID: "p1", Name: "phone", IPv4: serverIPv4(netip.MustParsePrefix(c.Server.IPv4)).Next().String(), PublicKey: pub, Enabled: true})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	k := &fakeKernel{}
+	sp := newSpeeds(store, k)
+	t0 := time.Unix(1_800_000_000, 0)
+	step := func(sec int, rx, tx int64) {
+		k.samples = []PeerSample{{PublicKey: pub, RxBytes: rx, TxBytes: tx}}
+		sp.sample(t0.Add(time.Duration(sec) * time.Second))
+	}
+	step(0, 1000, 1000)
+	if n := len(sp.Since(0)); n != 0 {
+		t.Fatalf("first sample made %d points, want 0", n)
+	}
+	step(2, 1250, 3000) // +250 up, +2000 down in 2 s
+	step(4, 10, 20)     // counter reset: no speed for this step
+	pts := sp.Since(0)
+	if len(pts) != 2 {
+		t.Fatalf("got %d points, want 2", len(pts))
+	}
+	if got, want := pts[0].Peers["p1"], [2]int64{8000, 1000}; got != want {
+		t.Fatalf("speed = %v, want %v (down, up in bit/s)", got, want)
+	}
+	if _, ok := pts[1].Peers["p1"]; ok {
+		t.Fatal("a counter reset reported a speed")
+	}
+	if got := sp.Since(pts[0].T); len(got) != 1 || got[0].T != pts[1].T {
+		t.Fatalf("Since returned %v", got)
+	}
+	for i := 0; i < speedPoints+5; i++ {
+		step(6+2*i, 0, 0)
+	}
+	if n := len(sp.Since(0)); n != speedPoints {
+		t.Fatalf("kept %d points, want %d", n, speedPoints)
+	}
+}

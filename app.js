@@ -47,6 +47,7 @@
     peers: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.8a3.5 3.5 0 0 1 0 6.4M18.5 14.8c1.5.8 2.6 2.6 3 5.2"/>',
     server: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
     settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    live: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
     log: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
@@ -555,7 +556,7 @@
 
   // ---------- shell, router ----------
 
-  const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/log', 'log', 'Log'], ['#/settings', 'settings', 'Settings']];
+  const NAV = [['#/', 'dashboard', 'Dashboard'], ['#/live', 'live', 'Live'], ['#/peers', 'peers', 'Peers'], ['#/server', 'server', 'Server'], ['#/log', 'log', 'Log'], ['#/settings', 'settings', 'Settings']];
   let navLinks = {};
   let srvBox, peerCount, verRow;
 
@@ -617,6 +618,7 @@
 
   const ROUTES = [
     [/^#\/?$/, '#/', viewDashboard],
+    [/^#\/live$/, '#/live', viewLive],
     [/^#\/peers$/, '#/peers', viewPeers],
     [/^#\/peers\/new$/, '#/peers', viewPeerNew],
     [/^#\/peers\/([\w-]+)$/, '#/peers', viewPeer],
@@ -1101,6 +1103,148 @@
     };
     await draw();
     every(30000, () => draw().catch(() => {}));
+  }
+
+  // ---------- live ----------
+
+  // fmtRate formats a speed in bits per second.
+  function fmtRate(bps) {
+    const u = ['bit/s', 'kbit/s', 'Mbit/s', 'Gbit/s'];
+    let i = 0, v = bps;
+    while (v >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+    const s = i === 0 ? String(Math.round(v)) : v < 10 ? v.toFixed(1) : String(Math.round(v));
+    return s + ' ' + u[i];
+  }
+
+  // Below this a peer counts as idle: keepalives and background chatter.
+  const IDLE_BPS = 2000;
+
+  // liveChart draws download as a filled area and upload as a line over the
+  // last points; hover shows the values at a moment.
+  function liveChart(points) {
+    const n = points.length, W = 1000, H = 100;
+    const top = niceTop(Math.max(0, ...points.map((p) => Math.max(p.down, p.up))) || 1e6);
+    const x = (i) => (n < 2 ? W : i / (n - 1) * W).toFixed(1), y = (v) => (H - v / top * H).toFixed(2);
+    const line = (k) => points.map((p, i) => x(i) + ',' + y(p[k])).join(' ');
+    const cursor = svg('line', { class: 'cursor', x1: 0, x2: 0, y1: 0, y2: H, visibility: 'hidden' });
+    const plot = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
+      n > 1 ? [
+        svg('polygon', { class: 'larea', points: '0,' + H + ' ' + line('down') + ' ' + W + ',' + H }),
+        svg('polyline', { class: 'ldown', points: line('down') }),
+        svg('polyline', { class: 'lup', points: line('up') }),
+      ] : null, cursor);
+    const at = (p) => new Date(p.t * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const peak = points.reduce((m, p) => p.down + p.up > m.down + m.up ? p : m, { down: 0, up: 0 });
+    const idle = () => peak.t
+      ? ['Peak ', h('strong', null, fmtRate(peak.down + peak.up)), ' at ' + at(peak) + ' · hover the chart to see a moment.']
+      : ['No traffic in the last 2 minutes.'];
+    const readout = h('div', { class: 'readout' }, idle());
+    const wrapEl = h('div', { class: 'plot', role: 'img', 'aria-label': 'Speed of all peers over the last 2 minutes',
+      onMousemove: (e) => {
+        const r = wrapEl.getBoundingClientRect();
+        const i = Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))));
+        const p = points[i];
+        cursor.setAttribute('x1', x(i)); cursor.setAttribute('x2', x(i)); cursor.setAttribute('visibility', 'visible');
+        readout.replaceChildren(at(p), ' · Download ', h('strong', null, fmtRate(p.down)), ' · Upload ', h('strong', null, fmtRate(p.up)));
+      },
+      onMouseleave: () => { cursor.setAttribute('visibility', 'hidden'); readout.replaceChildren(...idle()); } }, plot);
+    return h('div', null,
+      readout,
+      h('div', { class: 'chart small' },
+        h('div', { class: 'gl top' }), h('div', { class: 'gl mid' }), h('div', { class: 'gl base' }),
+        h('div', { class: 'yl top' }, fmtRate(top)), h('div', { class: 'yl mid' }, fmtRate(top / 2)),
+        wrapEl),
+      h('div', { class: 'xaxis lx' }, h('span', { style: { left: '0%' } }, '2 min ago'), h('span', { style: { left: '50%' } }, '1 min ago'), h('span', { style: { left: '100%' } }, 'now')));
+  }
+
+  // rateSpark draws a peer's total speed over the same window, scaled to its
+  // own peak.
+  function rateSpark(vals) {
+    const s = svg('svg', { class: 'spark wide', viewBox: '0 0 96 18', preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+    const top = Math.max(...vals, IDLE_BPS * 4);
+    const n = vals.length;
+    if (n < 2) return s;
+    const pts = vals.map((v, i) => (i / (n - 1) * 96).toFixed(1) + ',' + (17 - v / top * 15).toFixed(1));
+    s.append(svg('polygon', { class: 'fill', points: '0,18 ' + pts.join(' ') + ' 96,18' }), svg('polyline', { points: pts.join(' ') }));
+    return s;
+  }
+
+  // viewLive shows the speed of every peer right now, from the server's
+  // short in-memory history (the last 2 minutes in 2-second steps).
+  async function viewLive(wrap) {
+    let peers = (await api('GET', '/peers')).peers;
+    let live = await api('GET', '/live');
+    let paused = false;
+    const totals = h('div', { class: 'livenow' });
+    const chartBox = h('div');
+    const rows = h('div');
+    const pauseBtn = h('button', { type: 'button', class: 'btn', onClick: () => {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+      sub.replaceChildren(...subText());
+    } }, 'Pause');
+    const subText = () => paused
+      ? ['Paused · the chart keeps the moment you paused']
+      : [h('span', { class: 'dot ok pulse' }), ' Updated every ' + live.step + ' s · speeds are averages over the step'];
+    const sub = h('p', { class: 'sub livesub' }, subText());
+
+    const draw = () => {
+      const pts = live.points;
+      const sumAt = (p) => Object.values(p.peers).reduce((a, [d, u]) => ({ down: a.down + d, up: a.up + u }), { down: 0, up: 0 });
+      const series = pts.map((p) => ({ t: p.t, ...sumAt(p) }));
+      const now = series[series.length - 1] || { down: 0, up: 0 };
+      totals.replaceChildren(
+        h('div', null, h('div', { class: 'k' }, h('span', { class: 'key down' }), 'Download'), h('div', { class: 'v' }, fmtRate(now.down))),
+        h('div', null, h('div', { class: 'k' }, h('span', { class: 'key up' }), 'Upload'), h('div', { class: 'v' }, fmtRate(now.up))),
+        h('div', null, h('div', { class: 'k' }, 'Active peers'), h('div', { class: 'v' }, String(peers.filter((p) => {
+          const r = pts.length ? pts[pts.length - 1].peers[p.id] : null;
+          return r && r[0] + r[1] >= IDLE_BPS;
+        }).length), h('small', null, '/ ' + peers.filter((p) => p.stats.online).length + ' online'))));
+      chartBox.replaceChildren(liveChart(series));
+
+      const last = pts.length ? pts[pts.length - 1].peers : {};
+      const online = peers.filter((p) => p.stats.online)
+        .map((p) => ({ p, r: last[p.id] || [0, 0], hist: pts.map((x) => { const v = x.peers[p.id]; return v ? v[0] + v[1] : 0; }) }))
+        .sort((a, b) => (b.r[0] + b.r[1]) - (a.r[0] + a.r[1]) || a.p.name.localeCompare(b.p.name));
+      const offline = peers.filter((p) => !p.stats.online);
+      const rate = (v, idle) => idle ? h('span', { class: 'muted' }, '–') : h('span', { class: 'mono' }, fmtRate(v));
+      rows.replaceChildren(
+        online.length ? h('div', { class: 'tbl' }, h('table', { class: 'narrow' },
+          h('thead', null, h('tr', null, h('th', null, 'Peer'), h('th', null, 'Last 2 minutes'), h('th', { class: 'num' }, 'Download'), h('th', { class: 'num' }, 'Upload'), h('th', null, 'Endpoint'))),
+          h('tbody', null, online.map(({ p, r, hist }) => {
+            const idle = r[0] + r[1] < IDLE_BPS;
+            return h('tr', { class: idle ? 'idle' : null },
+              h('td', null, h('a', { href: '#/peers/' + p.id }, p.name), idle ? h('span', { class: 'tag plain' }, 'idle') : null),
+              h('td', null, rateSpark(hist)),
+              h('td', { class: 'num' }, rate(r[0], idle)),
+              h('td', { class: 'num' }, rate(r[1], idle)),
+              h('td', null, h('span', { class: 'mono' }, p.stats.endpoint ? p.stats.endpoint.replace(/:\d+$/, '') : '–'),
+                p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null));
+          })))) : h('p', { class: 'empty' }, 'No peer is online.'),
+        offline.length ? h('p', { class: 'liveoff' }, 'Offline: ', offline.map((p, i) => [i ? ', ' : '', h('a', { href: '#/peers/' + p.id }, p.name)])) : null);
+    };
+
+    fill(wrap,
+      h('div', { class: 'head' },
+        h('div', null, h('h1', null, 'Live'), sub),
+        h('div', { class: 'actions' }, pauseBtn)),
+      h('section', { class: 'card', 'aria-labelledby': 'lv' },
+        h('div', { class: 'cardhead' }, h('h2', { id: 'lv' }, 'All peers · right now')),
+        totals, chartBox),
+      h('section', { class: 'card flush', 'aria-labelledby': 'lp' },
+        h('div', { class: 'cardhead' }, h('h2', { id: 'lp' }, 'Peers'), h('span', { class: 'hint' }, 'Busiest first')),
+        rows));
+    draw();
+
+    every(2000, async () => {
+      if (paused) return;
+      try {
+        const more = await api('GET', '/live?since=' + (live.points.length ? live.points[live.points.length - 1].t : 0));
+        live = { step: more.step, points: live.points.concat(more.points).slice(-more.size) };
+        draw();
+      } catch { /* keep last */ }
+    });
+    every(15000, async () => { try { peers = (await api('GET', '/peers')).peers; } catch { /* keep last */ } });
   }
 
   function describeAudit(l) {

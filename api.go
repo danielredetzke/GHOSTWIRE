@@ -21,6 +21,7 @@ type App struct {
 	kernel   Kernel
 	recon    *Reconciler
 	stats    *Stats
+	speeds   *Speeds // nil in tests
 	auth     *Auth
 	tls      *webTLS
 	logPath  string
@@ -144,6 +145,7 @@ func (a *App) routes() http.Handler {
 
 	g("GET /api/v1/status", a.status)
 	g("GET /api/v1/stats", a.allStats)
+	g("GET /api/v1/live", a.liveSpeeds)
 
 	g("GET /api/v1/server", a.getServer)
 	g("PATCH /api/v1/server", a.patchServer)
@@ -396,6 +398,18 @@ func validRange(r *http.Request) string {
 func (a *App) allStats(w http.ResponseWriter, r *http.Request) {
 	rng := validRange(r)
 	writeJSON(w, http.StatusOK, map[string]any{"range": rng, "points": a.stats.series(nil, rng)})
+}
+
+// liveSpeeds returns each peer's speed over the last 2 minutes; with since
+// (unix seconds) only the newer steps.
+func (a *App) liveSpeeds(w http.ResponseWriter, r *http.Request) {
+	var since int64
+	fmt.Sscan(r.URL.Query().Get("since"), &since)
+	points := []SpeedPoint{}
+	if a.speeds != nil {
+		points = a.speeds.Since(since)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"step": int(speedStep / time.Second), "size": speedPoints, "points": points})
 }
 
 func (a *App) peerStats(w http.ResponseWriter, r *http.Request) {

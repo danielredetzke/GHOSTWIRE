@@ -5,8 +5,10 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 )
@@ -17,6 +19,7 @@ import (
 type simKernel struct {
 	mu    sync.Mutex
 	peers map[string]*PeerSample
+	last  time.Time // previous Sample; traffic grows with the time since
 }
 
 func newKernel() (Kernel, error) {
@@ -53,17 +56,23 @@ func (k *simKernel) Apply(c *Config) error {
 func (k *simKernel) Sample(string) ([]PeerSample, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	now := time.Now()
+	f := 1.0
+	if !k.last.IsZero() {
+		f = now.Sub(k.last).Seconds() / 30
+	}
+	k.last = now
 	var out []PeerSample
-	i := 0
-	for _, p := range k.peers {
-		// Every third peer stays idle; the others move some data.
+	for i, key := range slices.Sorted(maps.Keys(k.peers)) {
+		p := k.peers[key]
+		// Every third peer stays idle; the others move some data, scaled to
+		// the time since the previous sample.
 		if i%3 != 2 {
-			p.TxBytes += rand.Int64N(40 << 20)
-			p.RxBytes += rand.Int64N(6 << 20)
-			p.LastHandshake = time.Now().Add(-time.Duration(rand.IntN(90)) * time.Second)
+			p.TxBytes += int64(float64(rand.Int64N(40<<20)) * f)
+			p.RxBytes += int64(float64(rand.Int64N(6<<20)) * f)
+			p.LastHandshake = now.Add(-time.Duration(rand.IntN(90)) * time.Second)
 		}
 		out = append(out, *p)
-		i++
 	}
 	return out, nil
 }

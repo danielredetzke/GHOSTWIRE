@@ -219,16 +219,18 @@ func run(configPath string) error {
 	var stopOnce sync.Once
 	shutdown := func() { stopOnce.Do(func() { close(stop) }) }
 
+	speeds := newSpeeds(store, kernel)
 	auth := newAuth(store)
 	app := &App{
-		store: store, kernel: kernel, recon: recon, stats: stats, auth: auth, tls: webTLS,
+		store: store, kernel: kernel, recon: recon, stats: stats, speeds: speeds, auth: auth, tls: webTLS,
 		logPath: logPath, logw: logw, geo: geo, updates: newUpdater(cfg.Updates), started: time.Now(), shutdown: shutdown,
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
 	go func() { defer wg.Done(); recon.Run(stop) }()
 	go func() { defer wg.Done(); stats.Run(stop) }()
+	go func() { defer wg.Done(); speeds.Run(stop) }()
 	go func() { defer wg.Done(); stats.RunPings(stop) }()
 	go func() { defer wg.Done(); geo.Run(stop) }()
 	go func() { defer wg.Done(); app.updates.Run(stop) }()
