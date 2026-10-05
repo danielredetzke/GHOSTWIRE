@@ -9,11 +9,23 @@ binary, with a web interface, a JSON API and a native iPhone app.
 
 GHOSTWIRE sets up the WireGuard server, manages peers (add, change, disable,
 remove), hands out client configs as a download or QR code, and records traffic
-and connection history per peer. There are no install scripts and no
-dependencies on the server: the binary installs, updates and removes itself.
+and connection history per peer. There are no dependencies on the server:
+the binary installs, updates and removes itself.
 
-> **Coming from pivpn?** GHOSTWIRE takes over a pivpn WireGuard server in one
-> command: `sudo ./GHOSTWIRE install`. Your phones and laptops keep their
+## Quick start
+
+On a Linux server, run:
+
+```sh
+curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
+```
+
+It downloads the latest release for the server's architecture, checks it
+against `SHA256SUMS` and starts the [install](#install), which asks a few
+questions and changes nothing until you confirm.
+
+> **Coming from pivpn?** GHOSTWIRE takes over a pivpn WireGuard server with
+> the [quick start](#quick-start) command above. Your phones and laptops keep their
 > current configs and reconnect on their own, with nothing to re-scan or
 > re-send. See [Moving from pivpn](#moving-from-pivpn).
 
@@ -106,7 +118,15 @@ make test
 
 ## Install
 
-The binary installs itself. Copy it to the server and run it as root:
+The quickest way is the [one-line install](#quick-start). Arguments after
+`sh -s --` are passed on to `install` and skip their questions:
+
+```sh
+curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh -s -- -domain vpn.example.net -email you@example.net
+```
+
+The binary installs itself, so you can also copy it to the server and run it
+as root:
 
 ```sh
 scp dist/amd64/GHOSTWIRE server:/tmp/
