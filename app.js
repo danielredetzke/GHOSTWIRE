@@ -1856,7 +1856,8 @@
           if (/^table /.test(c.detail)) { t.raw = c.detail.replace(/ (present|missing)$/, ''); t.problem = null; }
           break;
         case 'Last apply':
-          if (c.ok) { const iso = c.detail.replace(/^applied /, ''); t.status = ago(iso); t.title = fmtStamp(iso); } else t.status = 'Failed';
+          t.label = 'Kernel in sync';
+          if (c.ok) { const iso = c.detail.replace(/^applied /, ''); t.status = ago(iso); t.title = fmtStamp(iso); } else t.status = 'Out of sync';
           break;
         case 'Latency check': t.status = c.ok ? 'Tunnel ping works' : 'Failing'; break;
       }
