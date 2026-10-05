@@ -1125,22 +1125,6 @@
 
   const calm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // countTo moves the number in el from its last value to v over a short
-  // time instead of jumping.
-  function countTo(el, v) {
-    const from = el._v ?? v;
-    el._v = v;
-    cancelAnimationFrame(el._raf);
-    if (calm() || from === v) { el.textContent = fmtRate(v); return; }
-    const t0 = performance.now(), ms = 700;
-    const tick = (now) => {
-      const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
-      el.textContent = fmtRate(from + (v - from) * e);
-      if (k < 1) el._raf = requestAnimationFrame(tick);
-    };
-    el._raf = requestAnimationFrame(tick);
-  }
-
   // liveChart draws download as a filled area and upload as a line. It is
   // built once and updated in place: each new step enters just beyond the
   // right edge and the chart slides left by one step over the step's length,
@@ -1266,8 +1250,8 @@
       const avg = (f) => recent.length ? recent.reduce((a, p) => a + f(p), 0) / recent.length : 0;
       const last = {};
       for (const p of peers) last[p.id] = [avg((x) => (x.peers[p.id] || [0, 0])[0]), avg((x) => (x.peers[p.id] || [0, 0])[1])];
-      countTo(down, avg((p) => sumAt(p).down));
-      countTo(up, avg((p) => sumAt(p).up));
+      down.textContent = fmtRate(avg((p) => sumAt(p).down));
+      up.textContent = fmtRate(avg((p) => sumAt(p).up));
       active.replaceChildren(String(peers.filter((p) => { const r = last[p.id]; return r && r[0] + r[1] >= IDLE_BPS; }).length),
         h('small', null, '/ ' + peers.filter((p) => p.stats.online).length + ' online'));
       lc.update(series, live.size, live.step, slide);
