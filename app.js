@@ -1119,6 +1119,10 @@
   // Below this a peer counts as idle: keepalives and background chatter.
   const IDLE_BPS = 2000;
 
+  // The figures and the table average the last few steps so they do not
+  // swing with every burst; the charts show each step.
+  const AVG_STEPS = 5;
+
   const calm = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // countTo moves the number in el from its last value to v over a short
@@ -1251,17 +1255,19 @@
     } }, 'Pause');
     const subText = () => paused
       ? ['Paused · the chart keeps the moment you paused']
-      : [h('span', { class: 'dot ok pulse' }), ' Updated every ' + live.step + ' s · speeds are averages over the step'];
+      : [h('span', { class: 'dot ok pulse' }), ' Updated every ' + live.step + ' s · figures are ' + AVG_STEPS * live.step + '-second averages'];
     const sub = h('p', { class: 'sub livesub' }, subText());
 
     const draw = (slide) => {
       const pts = live.points;
       const sumAt = (p) => Object.values(p.peers).reduce((a, [d, u]) => ({ down: a.down + d, up: a.up + u }), { down: 0, up: 0 });
       const series = pts.map((p) => ({ t: p.t, ...sumAt(p) }));
-      const now = series[series.length - 1] || { down: 0, up: 0 };
-      const last = pts.length ? pts[pts.length - 1].peers : {};
-      countTo(down, now.down);
-      countTo(up, now.up);
+      const recent = pts.slice(-AVG_STEPS);
+      const avg = (f) => recent.length ? recent.reduce((a, p) => a + f(p), 0) / recent.length : 0;
+      const last = {};
+      for (const p of peers) last[p.id] = [avg((x) => (x.peers[p.id] || [0, 0])[0]), avg((x) => (x.peers[p.id] || [0, 0])[1])];
+      countTo(down, avg((p) => sumAt(p).down));
+      countTo(up, avg((p) => sumAt(p).up));
       active.replaceChildren(String(peers.filter((p) => { const r = last[p.id]; return r && r[0] + r[1] >= IDLE_BPS; }).length),
         h('small', null, '/ ' + peers.filter((p) => p.stats.online).length + ' online'));
       lc.update(series, live.size, live.step, slide);
