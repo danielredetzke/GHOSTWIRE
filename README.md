@@ -17,12 +17,14 @@ the binary installs, updates and removes itself.
 On a Linux server, run:
 
 ```sh
-curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
+curl -fsSL https://ghostwi.re/install | sh
 ```
 
-or the same script from the GitHub mirror:
+The short link leads to the script on Gitea. The same script can also be
+fetched directly from Gitea or from the GitHub mirror:
 
 ```sh
+curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/danielredetzke/GHOSTWIRE/main/install.sh | sh
 ```
 
@@ -128,7 +130,7 @@ The quickest way is the [one-line install](#quick-start). Arguments after
 `sh -s --` are passed on to `install` and skip their questions:
 
 ```sh
-curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh -s -- -domain vpn.example.net -email you@example.net
+curl -fsSL https://ghostwi.re/install | sh -s -- -domain vpn.example.net -email you@example.net
 ```
 
 The binary installs itself, so you can also copy it to the server and run it
