@@ -2,8 +2,11 @@
 # Downloads the latest GHOSTWIRE release, checks it against SHA256SUMS and
 # runs its install command. Usage:
 #
-#   curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
-#   curl -fsSL …/install.sh | sh -s -- -y -domain vpn.example.net -email you@example.net
+#   curl -fsSL https://ghostwi.re/install | sh
+#   curl -fsSL https://ghostwi.re/install | sh -s -- -y -domain vpn.example.net -email you@example.net
+#
+# ghostwi.re/install redirects to this file on Gitea; the GitHub mirror has it
+# at raw.githubusercontent.com/danielredetzke/GHOSTWIRE/main/install.sh.
 #
 # Arguments are passed on to "GHOSTWIRE install". Everything is wrapped in
 # main so that a cut-off download runs nothing.
