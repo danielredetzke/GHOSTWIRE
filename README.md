@@ -37,7 +37,7 @@ questions and changes nothing until you confirm.
 > current configs and reconnect on their own, with nothing to re-scan or
 > re-send. See [Moving from pivpn](#moving-from-pivpn).
 
-![Dashboard with peers online, traffic of the last 24 hours, the peer list and recent activity](screenshots/dashboard.png)
+![Dashboard with the protection check, peers online, traffic of the last 24 hours, the peer list and recent activity](screenshots/dashboard.png)
 
 ## Features
 
