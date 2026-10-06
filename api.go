@@ -34,6 +34,7 @@ type App struct {
 	started  time.Time
 	shutdown func()   // graceful stop; systemd restarts the service
 	webAddrs []string // the addresses the web server listens on now
+	endpoint endpointIPs
 }
 
 // --- helpers ---
@@ -389,6 +390,7 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		"traffic24h": map[string]int64{"down": d24, "up": u24},
 		"traffic30d": map[string]int64{"down": d30, "up": u30},
 		"topPeer30d": top,
+		"visitor":    a.visitor(r, cfg),
 	})
 }
 

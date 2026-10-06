@@ -218,6 +218,22 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-d
 @media (max-width: 1000px) { .hcbody { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 640px) { .hcrow { grid-template-columns: 8px minmax(0, 1fr); } .hcrow .v { grid-column: 2; } }
 
+/* visitor: the address websites see next to the server's */
+.visitor { display: flex; flex-wrap: wrap; align-items: stretch; gap: 16px 24px; }
+.vstate { flex: 1 1 340px; min-width: 0; display: flex; gap: 14px; align-items: flex-start; }
+.vstate h2 { margin: 2px 0 4px; font-size: 18px; font-weight: 600; }
+.vstate p { margin: 0; color: var(--ink-2); font-size: 13px; max-width: 62ch; }
+.vicon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; }
+.visitor.ok .vicon { background: #e6f5e6; color: #0b7a0b; }
+.visitor.ok h2 { color: #0b6b0b; }
+.visitor.off .vicon { background: var(--warn-bg); color: var(--warn-ink); }
+.visitor.off h2 { color: var(--warn-ink); }
+.vaddrs { flex: 2 1 420px; min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.visitor .hcaddr { padding: 12px 16px; }
+.visitor .hcaddr .v.mono { font-size: 20px; }
+.visitor.ok .hcaddr { background: #eef7ee; box-shadow: inset 0 0 0 1px #c5e3c5; }
+.visitor.off .hcaddr:first-child { background: var(--warn-bg); box-shadow: inset 0 0 0 1px #f0d2ad; }
+
 /* updates */
 .upvers { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px; }
 .upbox { background: var(--ground); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }

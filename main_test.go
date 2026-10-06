@@ -1607,3 +1607,42 @@ func TestApplyOrder(t *testing.T) {
 		t.Fatalf("the kernel ended with %q, not the newest config; applies: %q", last, k.applied)
 	}
 }
+
+func TestClassifyVisitor(t *testing.T) {
+	c := testConfig(t)
+	c.Peers = []Peer{
+		{ID: "full", Name: "phone", IPv4: "10.84.12.2", Enabled: true},
+		{ID: "split", Name: "laptop", IPv4: "10.84.12.3", Enabled: true, AllowedIPs: []string{"10.84.12.0/24"}},
+		{ID: "off", Name: "old", IPv4: "10.84.12.4"},
+	}
+	server := netip.MustParseAddr("203.0.113.10")
+	none := func(netip.Addr) bool { return false }
+	lan := func(ip netip.Addr) bool { return ip == netip.MustParseAddr("192.168.1.5") }
+	for _, tc := range []struct {
+		ip        string
+		own       func(netip.Addr) bool
+		protected bool
+		shown     string
+		peer      string
+	}{
+		{"10.84.12.2", none, true, "203.0.113.10", "phone"},                          // full tunnel
+		{"10.84.12.3", none, false, "10.84.12.3", "laptop"},                          // split tunnel
+		{"10.84.12.4", none, false, "10.84.12.4", ""},                                // disabled peer
+		{"203.0.113.10", none, true, "203.0.113.10", ""},                             // looped back through the router
+		{"192.168.1.5", lan, true, "203.0.113.10", ""},                               // the server's own address
+		{"198.51.100.77", none, false, "198.51.100.77", ""},                          // directly
+		{"127.0.0.1", func(netip.Addr) bool { return true }, false, "127.0.0.1", ""}, // local proxy
+	} {
+		v := classifyVisitor(c, netip.MustParseAddr(tc.ip), server, tc.own)
+		name := ""
+		if v.Peer != nil {
+			name = v.Peer.Name
+		}
+		if v.Protected != tc.protected || v.IP != tc.shown || name != tc.peer || v.ServerIP != "203.0.113.10" {
+			t.Errorf("%s: got %+v", tc.ip, v)
+		}
+	}
+	if !fullTunnel([]string{"0.0.0.0/1", "128.0.0.0/1"}, false) || fullTunnel([]string{"::/0"}, false) || !fullTunnel([]string{"::/0"}, true) {
+		t.Error("fullTunnel")
+	}
+}

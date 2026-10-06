@@ -57,6 +57,9 @@ questions and changes nothing until you confirm.
   server has a global IPv6 address.
 - **Traffic history:** kept in `stats.json`, hourly for 48 h and daily for
   400 days by default (Settings → Logs & history).
+- **Protection check:** the dashboard shows the address websites see for your
+  browser next to the server's. The same address means you are behind the
+  VPN; a peer that only routes the VPN network counts as not protected.
 - **Live view:** the speed of every peer right now, updated every 2 seconds,
   with the last 2 minutes as a chart. Kept in memory only.
 - **Connection history:** every online session per peer, with start, duration,

@@ -51,6 +51,8 @@
     plus: '<path d="M12 5v14M5 12h14"/>',
     key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
     log: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+    shield: '<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+    shieldoff: '<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4.5M12 15.8h.01"/>',
     logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
   };
 
@@ -1033,6 +1035,37 @@
   // RANGES are the time ranges offered above the traffic charts.
   const RANGES = [['24h', '24 h'], ['7d', '7 days'], ['30d', '30 days']];
 
+  // visitorCard shows the address websites see for this browser next to the
+  // server's: the same address means the browser is behind the VPN.
+  function visitorCard(v) {
+    if (!v) return null;
+    const addr = (label, value, note) => h('div', { class: 'hcaddr' },
+      h('span', { class: 'l' }, label), h('span', { class: 'v mono' }, value || 'Unknown'), h('span', { class: 'n' }, note));
+    const server = addr('Server IP address', v.serverIP, v.protected ? 'Same address: you are behind the VPN' : 'Different address: you are not behind the VPN');
+    if (v.protected) {
+      return h('section', { class: 'card visitor ok', 'aria-labelledby': 'vis' },
+        h('div', { class: 'vstate' },
+          h('span', { class: 'vicon' }, icon('shield', 22, 1.8)),
+          h('div', null,
+            h('h2', { id: 'vis' }, 'You are protected'),
+            h('p', null, v.peer
+              ? ['This browser is connected through the tunnel as ', peerLink(v.peer), '. All its traffic goes out through this server, so websites see the server\'s address, not yours.']
+              : 'This browser\'s traffic goes out through this server, so websites see the server\'s address, not yours.'))),
+        h('div', { class: 'vaddrs' }, addr('Your IP address', v.ip, 'What websites see'), server));
+    }
+    const where = v.peer ? 'Tunnel address of ' + v.peer.name
+      : v.location ? [v.location.countryName, v.location.network].filter(Boolean).join(' · ') : 'What websites see';
+    return h('section', { class: 'card visitor off', 'aria-labelledby': 'vis' },
+      h('div', { class: 'vstate' },
+        h('span', { class: 'vicon' }, icon('shieldoff', 22, 1.8)),
+        h('div', null,
+          h('h2', { id: 'vis' }, 'Not protected'),
+          h('p', null, v.peer
+            ? ['This browser uses the tunnel as ', peerLink(v.peer), ' only for the VPN network. Its other traffic skips the VPN, so websites see your own address.']
+            : 'This browser connects directly, not through the VPN. Websites see your own address. Turn on the tunnel on this device to browse through this server.'))),
+      h('div', { class: 'vaddrs' }, addr('Your IP address', v.ip, where), server));
+  }
+
   async function viewDashboard(wrap) {
     let range = '24h';
     const draw = async () => {
@@ -1064,6 +1097,8 @@
         h('div', { class: 'head' },
           h('div', null, h('h1', null, 'Dashboard'),
             h('p', { class: 'sub' }, 'Endpoint ', h('span', { class: 'mono' }, st.endpoint), ' · network ', h('span', { class: 'mono' }, st.ipv4)))),
+
+        visitorCard(st.visitor),
 
         failing.length ? h('div', { class: 'notice err', role: 'alert' },
           h('div', null, h('strong', null, 'Needs attention: '), failing.map((c) => c.name + ' (' + c.detail + ')').join(' · ')),
