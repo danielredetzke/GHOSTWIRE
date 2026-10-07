@@ -95,6 +95,11 @@ func readPivpn(root string) (*pivpnSetup, error) {
 			srv.ClientDefaults.AllowedIPs = append(srv.ClientDefaults.AllowedIPs, p.Masked().String())
 		}
 	}
+	// pivpn without IPv6 writes only 0.0.0.0/0, so clients would send IPv6
+	// around the tunnel. ::/0 makes the server drop it instead.
+	if fullTunnel(srv.ClientDefaults.AllowedIPs, false) && !fullTunnel(srv.ClientDefaults.AllowedIPs, true) {
+		srv.ClientDefaults.AllowedIPs = append(srv.ClientDefaults.AllowedIPs, "::/0")
+	}
 	srv.ClientDefaults.Keepalive, _ = strconv.Atoi(vars["pivpnPERSISTENTKEEPALIVE"])
 
 	// Clients

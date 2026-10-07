@@ -33,9 +33,9 @@ func pivpnFixture(t *testing.T, ipv6 bool, clients []pivpnClient) (root string, 
 	for _, d := range []string{"etc/pivpn/wireguard", "etc/wireguard/configs", "etc/wireguard/keys"} {
 		must(os.MkdirAll(filepath.Join(root, d), 0o755))
 	}
-	v6 := "0"
+	v6, allowed := "0", "0.0.0.0/0"
 	if ipv6 {
-		v6 = "1"
+		v6, allowed = "1", "0.0.0.0/0, ::0/0"
 	}
 	vars := `USING_UFW=0
 IPv4dev=eth0
@@ -53,7 +53,7 @@ subnetClass=24
 pivpnenableipv6=` + v6 + `
 pivpnNETv6="fd11:5ee:bad:c0de::"
 subnetClassv6=64
-ALLOWED_IPS="0.0.0.0/0, ::0/0"
+ALLOWED_IPS="` + allowed + `"
 INSTALLED_PACKAGES=(wireguard-tools qrencode)
 `
 	must(os.WriteFile(filepath.Join(root, pivpnSetupVars), []byte(vars), 0o644))
@@ -179,7 +179,7 @@ func TestPivpnImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	c4 := importedConfig(t, s4)
-	if c4.Server.IPv6Enabled || c4.Peers[0].IPv6 != "" {
+	if c4.Server.IPv6Enabled || c4.Peers[0].IPv6 != "" || strings.Join(c4.Server.ClientDefaults.AllowedIPs, ",") != "0.0.0.0/0,::/0" {
 		t.Fatalf("IPv4-only import: %+v %+v", c4.Server, c4.Peers[0])
 	}
 
