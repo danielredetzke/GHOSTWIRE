@@ -745,6 +745,13 @@ func TestSetupLink(t *testing.T) {
 	call(public, "GET", "/api/v1/setup/nonsense", nil, 404)
 	call(public, "GET", path, nil, 200) // the page itself
 
+	// Posting to an unknown link does not write config.json.
+	before, _ := os.Stat(filepath.Join(dir, "config.json"))
+	call(public, "POST", "/api/v1/setup/nonsense", map[string]string{"pin": "1234"}, 404)
+	if after, _ := os.Stat(filepath.Join(dir, "config.json")); !os.SameFile(before, after) || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("an unknown setup link rewrote config.json")
+	}
+
 	wrong := "0000"
 	if wrong == pin {
 		wrong = "1111"
@@ -1686,5 +1693,42 @@ func TestPeerEmptyOverrides(t *testing.T) {
 	err = store.Update(func(c *Config) error { c.Server.ClientDefaults.AllowedIPs = []string{}; return nil })
 	if err == nil || !strings.Contains(err.Error(), "AllowedIPs") {
 		t.Errorf("empty default AllowedIPs should be refused: %v", err)
+	}
+}
+
+func TestStoreUpdateUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	store, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	if err := store.Update(func(c *Config) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.Stat(path); !os.SameFile(before, after) {
+		t.Fatal("an update that changed nothing rewrote config.json")
+	}
+	if err := store.Update(func(c *Config) error { c.Server.MTU = 1400; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.Stat(path); os.SameFile(before, after) {
+		t.Fatal("a real change was not written")
+	}
+	if c, _ := loadConfigFile(path); c.Server.MTU != 1400 {
+		t.Fatalf("MTU on disk %d, want 1400", c.Server.MTU)
+	}
+}
+
+func TestWriteErrHidesInternalErrors(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeErr(rec, errors.New("open /opt/ghostwire/secret: permission denied"))
+	if rec.Code != 500 || strings.Contains(rec.Body.String(), "/opt/ghostwire") {
+		t.Fatalf("500 answer leaks the error: %d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	writeErr(rec, badRequest("name must be 1–32 characters"))
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "name must be") {
+		t.Fatalf("400 answer lost its message: %d %s", rec.Code, rec.Body)
 	}
 }

@@ -223,6 +223,14 @@ func (a *App) setupRedeem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	ip := remoteIP(r)
+	// Anyone can post here: an unknown or expired link is answered from a
+	// copy of the config, without making keys or taking the store lock.
+	if p := a.store.Get().peerByToken(r.PathValue("token")); p == nil || p.Setup.expired(time.Now()) {
+		slog.Warn("setup link not valid", "remote", ip)
+		setupInvalid(w)
+		return
+	}
 	k, err := newPrivateKey()
 	if err != nil {
 		writeErr(w, err)
@@ -233,7 +241,6 @@ func (a *App) setupRedeem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	ip := remoteIP(r)
 	var (
 		id, name   string
 		hadKey     bool

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"errors"
@@ -644,6 +645,14 @@ func (s *Store) Update(fn func(c *Config) error) error {
 	if old.passwordSet() && !next.passwordSet() {
 		s.mu.Unlock()
 		return &userError{"this would leave no user with a password, and nobody could sign in"}
+	}
+	// Nothing changed: no write, so requests that change nothing (e.g. an
+	// unknown setup link) cost no disk writes.
+	if a, err := json.Marshal(old); err == nil {
+		if b, err := json.Marshal(next); err == nil && bytes.Equal(a, b) {
+			s.mu.Unlock()
+			return nil
+		}
 	}
 	if err := writeFileAtomic(s.path, next, 0o600); err != nil {
 		s.mu.Unlock()
