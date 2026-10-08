@@ -258,21 +258,6 @@ because `wg0` lives in the kernel.
 
 ## config.json
 
-A minimal file is enough. Missing values are filled with defaults on first
-start: server key, a random free /24 subnet, port 51820, MTU 1420, Quad9 DNS,
-full tunnel.
-
-```json
-{
-  "web": {
-    "listen": ":443",
-    "httpListen": ":80",
-    "tls": { "mode": "acme", "domain": "vpn.example.net", "email": "admin@example.net" }
-  },
-  "server": { "endpoint": "vpn.example.net" }
-}
-```
-
 `web.tls.mode` can be:
 
 | Mode | What it does |
