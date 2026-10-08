@@ -117,8 +117,10 @@ questions and changes nothing until you confirm.
 
 - Linux with kernel 5.6 or newer (WireGuard built in), nftables and systemd
 - x86-64, ARM64, or 32-bit ARMv7 (Raspberry Pi OS 32-bit)
-- Ports: UDP 51820 (WireGuard; another port can be chosen at install), TCP 443
-  (web), TCP 80 (optional, Let's Encrypt http-01 and redirect)
+- Ports: UDP 51820 (WireGuard), TCP 443 (web), TCP 80 (optional, Let's
+  Encrypt http-01 and redirect). The WireGuard port can be chosen at install
+  and changed later under Server; the web ports under Settings → Web
+  interface.
 
 ## Build
 
