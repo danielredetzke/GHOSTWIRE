@@ -52,8 +52,9 @@ func writeErr(w http.ResponseWriter, err error) {
 	case errors.As(err, &ue):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": ue.msg})
 	default:
+		// The details (paths, system errors) go to the log, not to the client.
 		slog.Error("request failed", "err", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error; the details are in the log"})
 	}
 }
 

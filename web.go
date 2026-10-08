@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -105,7 +106,8 @@ func (a *App) setupPage(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := webFiles.ReadFile("setup.html")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("setup page", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	base := "/setup/" + url.PathEscape(token) + "/"
