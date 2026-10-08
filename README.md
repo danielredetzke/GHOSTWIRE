@@ -189,7 +189,7 @@ is already installed needs no password. All flags:
 |---|---|
 | `-domain` | none: self-signed certificate |
 | `-email` | none |
-| `-endpoint` | the domain |
+| `-endpoint` | the address devices connect to: the domain, else the server's detected public IP; when already installed, the current one |
 | `-port` | 51820, or the current port when already installed |
 | `-import-pivpn` | off: see [Moving from pivpn](#moving-from-pivpn) |
 | `-no-wait` | off: after a pivpn takeover, don't wait for devices to reconnect |

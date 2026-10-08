@@ -381,7 +381,7 @@ func cmdInstall(args []string) (err error) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	domain := fs.String("domain", "", "domain for the web interface; enables Let's Encrypt")
 	email := fs.String("email", "", "contact email for Let's Encrypt (optional)")
-	endpoint := fs.String("endpoint", "", "host or IP clients connect to (default: the domain)")
+	endpoint := fs.String("endpoint", "", "host or IP devices connect to (default: the domain, else the detected public IP)")
 	port := fs.Int("port", 0, "UDP port WireGuard listens on (default: 51820, or the current port when already installed)")
 	yes := fs.Bool("y", false, "do not ask; use the flags and defaults")
 	importPivpn := fs.Bool("import-pivpn", false, "take over pivpn's WireGuard server and clients (new installs only)")
