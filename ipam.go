@@ -132,7 +132,7 @@ func peerIPv6(c *Config, p *Peer) netip.Addr {
 }
 
 // mapIPv6 puts the 32 bits of an IPv4 address into the low bits of the IPv6
-// network: 10.84.12.8 in fd11:5ee:bad:c0de::/64 becomes fd11:5ee:bad:c0de::a54:c08.
+// network: 10.84.12.8 in fd00:b00b:5::/64 becomes fd00:b00b:5::a54:c08.
 func mapIPv6(v6net netip.Prefix, v4 netip.Addr) netip.Addr {
 	b := v6net.Addr().As16()
 	copy(b[12:], v4.AsSlice())

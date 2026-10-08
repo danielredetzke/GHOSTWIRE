@@ -181,7 +181,7 @@ func TestPivpnImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	c4 := importedConfig(t, s4)
-	if c4.Server.IPv6Enabled || c4.Peers[0].IPv6 != "" || strings.Join(c4.Server.ClientDefaults.AllowedIPs, ",") != "0.0.0.0/0,::/0" {
+	if c4.Server.IPv6Enabled || c4.Peers[0].IPv6 != "" || c4.Server.IPv6 != defaultIPv6 || strings.Join(c4.Server.ClientDefaults.AllowedIPs, ",") != "0.0.0.0/0,::/0" {
 		t.Fatalf("IPv4-only import: %+v %+v", c4.Server, c4.Peers[0])
 	}
 
@@ -283,11 +283,11 @@ func TestPivpnInstallQuestion(t *testing.T) {
 func TestPeerIPv6Kept(t *testing.T) {
 	c := testConfig(t)
 	c.Server.IPv6Enabled = true
-	c.Peers = []Peer{{ID: "a", Name: "a", IPv4: "10.84.12.2", PublicKey: "k1", IPv6: "fd11:5ee:bad:c0de::2"}}
+	c.Peers = []Peer{{ID: "a", Name: "a", IPv4: "10.84.12.2", PublicKey: "k1", IPv6: "fd00:b00b:5::2"}}
 	if err := c.validate(); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"10.84.12.9", "fd00::2", "fd11:5ee:bad:c0de::", "not an address"} {
+	for _, bad := range []string{"10.84.12.9", "fd00::2", "fd00:b00b:5::", "not an address"} {
 		c.Peers[0].IPv6 = bad
 		if c.validate() == nil {
 			t.Errorf("IPv6 %q should be refused", bad)

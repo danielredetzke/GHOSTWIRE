@@ -21,8 +21,8 @@ import (
 )
 
 func TestMapIPv6(t *testing.T) {
-	got := mapIPv6(netip.MustParsePrefix("fd11:5ee:bad:c0de::/64"), netip.MustParseAddr("10.84.12.8"))
-	if got.String() != "fd11:5ee:bad:c0de::a54:c08" {
+	got := mapIPv6(netip.MustParsePrefix("fd00:b00b:5::/64"), netip.MustParseAddr("10.84.12.8"))
+	if got.String() != "fd00:b00b:5::a54:c08" {
 		t.Fatalf("got %s", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestClientConfig(t *testing.T) {
 	out := clientConfig(c, &p, "priv=")
 	for _, want := range []string{
 		"PrivateKey = priv=",
-		"Address = 10.84.12.8/24,fd11:5ee:bad:c0de::a54:c08/64",
+		"Address = 10.84.12.8/24,fd00:b00b:5::a54:c08/64",
 		"DNS = 9.9.9.9, 149.112.112.112",
 		"PresharedKey = psk=",
 		"Endpoint = vpn.example.net:51820",

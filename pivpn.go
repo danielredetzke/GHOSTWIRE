@@ -163,7 +163,7 @@ func (s *pivpnSetup) apply(c *Config) {
 	if c.Server.IPv6 == "" {
 		// IPv4-only pivpn: IPv6 stays off, with the network GHOSTWIRE
 		// would pick, ready for when it is switched on.
-		c.Server.IPv6 = "fd11:5ee:bad:c0de::/64"
+		c.Server.IPv6 = defaultIPv6
 	}
 	c.Peers = slices.Clone(s.Peers)
 	c.applyDefaults()

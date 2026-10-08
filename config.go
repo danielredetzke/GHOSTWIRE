@@ -150,7 +150,7 @@ type Server struct {
 	ListenPort     int            `json:"listenPort"`
 	MTU            int            `json:"mtu"`
 	IPv4           string         `json:"ipv4"` // tunnel network, e.g. 10.84.12.0/24
-	IPv6           string         `json:"ipv6"` // tunnel network, e.g. fd11:5ee:bad:c0de::/64
+	IPv6           string         `json:"ipv6"` // tunnel network, e.g. fd00:b00b:5::/64
 	IPv6Enabled    bool           `json:"ipv6Enabled"`
 	Endpoint       string         `json:"endpoint"`     // host name or IP clients connect to
 	EndpointPort   int            `json:"endpointPort"` // 0 = listenPort
@@ -209,6 +209,9 @@ type LogConfig struct {
 }
 
 const configVersion = 2
+
+// defaultIPv6 is the IPv6 tunnel network of a new server.
+const defaultIPv6 = "fd00:b00b:5::/64"
 
 // applyDefaults fills zero values. It never overwrites values that are set,
 // so a minimal hand-written config.json grows into a complete one.
@@ -312,7 +315,7 @@ func (c *Config) initServer() (bool, error) {
 		s.IPv4 = n.String()
 	}
 	if s.IPv6 == "" {
-		s.IPv6 = "fd11:5ee:bad:c0de::/64"
+		s.IPv6 = defaultIPv6
 		s.IPv6Enabled = hasGlobalIPv6()
 	}
 	s.NAT = true
