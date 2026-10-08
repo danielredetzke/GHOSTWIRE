@@ -172,8 +172,11 @@ follow.
 
 ### Unattended install
 
-For scripts, cloud-init or Ansible, give the settings as flags and add `-y`,
-so nothing is asked. The admin password is then passed in with `echo`:
+For scripts, cloud-init or Ansible, first download the binary for your server
+from the [latest release](https://github.com/danielredetzke/GHOSTWIRE/releases/latest)
+and make it executable (`chmod +x GHOSTWIRE`); the one-line install can't be
+used unattended. Then give the settings as flags and add `-y`, so nothing is
+asked. The admin password is passed in with `echo`:
 
 ```sh
 echo "MyLongPassword" | sudo ./GHOSTWIRE install -y -domain vpn.example.net -email you@example.net
