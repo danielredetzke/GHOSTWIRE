@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -448,6 +450,9 @@ func cmdInstall(args []string) (err error) {
 			return err
 		}
 	} else {
+		if plan.endpoint, err = unattendedEndpoint(plan, cur, detectPublicIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: %v. Devices need the address they connect to: give -endpoint, or set it later under Server.\n", err)
+		}
 		if n := plan.reissueCount(cur, existing); n > 0 {
 			fmt.Printf("Note: %d existing device(s) need a new config: the endpoint or port changes.\n", n)
 		}
@@ -603,6 +608,23 @@ func checkPivpn(existing, importPivpn, interactive bool, pv *pivpnSetup, pivpnUn
 		return fmt.Errorf("pivpn runs WireGuard on %s here; add -import-pivpn to take it over, or remove pivpn first", pv.Dev)
 	}
 	return nil
+}
+
+// unattendedEndpoint is the address devices connect to when install asks
+// nothing: the one given, else the domain or the current endpoint (kept by
+// plan.apply), else the server's public IP, as the question offers it.
+func unattendedEndpoint(p installPlan, cur *Config, detect func(context.Context) (netip.Addr, error)) (string, error) {
+	if p.endpoint != "" || p.domain != "" || cur.Server.Endpoint != "" {
+		return p.endpoint, nil
+	}
+	if d := cur.Web.TLS.Domain; d != "" {
+		return d, nil
+	}
+	ip, err := detect(context.Background())
+	if err != nil {
+		return "", err
+	}
+	return ip.String(), nil
 }
 
 // stdinPassword reads the admin password of an install without questions

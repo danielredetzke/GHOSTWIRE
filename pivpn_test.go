@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -420,5 +421,36 @@ COMMIT
 		`-A POSTROUTING -m comment --comment "wireguard-nat-rule copy" -j MASQUERADE` + "\n"
 	if r := pivpnNATRules(s); len(r) != 1 || r[0][2] != "fd11:5ee:bad:c0de::/64" {
 		t.Errorf("iptables -S: %q", r)
+	}
+}
+
+func TestUnattendedEndpoint(t *testing.T) {
+	detected := func(context.Context) (netip.Addr, error) { return netip.MustParseAddr("203.0.113.7"), nil }
+	failed := func(context.Context) (netip.Addr, error) { return netip.Addr{}, errors.New("no network") }
+	cur := testConfig(t)
+	cur.Server.Endpoint = ""
+
+	for _, tc := range []struct {
+		name     string
+		plan     installPlan
+		endpoint string // current endpoint
+		domain   string // current domain
+		want     string
+	}{
+		{"new install without flags", installPlan{}, "", "", "203.0.113.7"},
+		{"-endpoint given", installPlan{endpoint: "vpn.example.net"}, "", "", "vpn.example.net"},
+		{"-domain given (apply uses it)", installPlan{domain: "vpn.example.net"}, "", "", ""},
+		{"endpoint already set", installPlan{}, "198.51.100.1", "", ""},
+		{"domain already set", installPlan{}, "", "vpn.example.net", "vpn.example.net"},
+	} {
+		c := cur.clone()
+		c.Server.Endpoint, c.Web.TLS.Domain = tc.endpoint, tc.domain
+		got, err := unattendedEndpoint(tc.plan, c, detected)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+	if got, err := unattendedEndpoint(installPlan{}, cur, failed); err == nil || got != "" {
+		t.Errorf("a failed detection should be reported: %q, %v", got, err)
 	}
 }
