@@ -2406,7 +2406,8 @@
 
     // web interface
     const web = JSON.parse(JSON.stringify(s.web));
-    const restartBox = h('div');
+    const webRestart = h('div');
+    const restoreRestart = h('div');
     const webErr = h('p', { class: 'err-text', role: 'alert' });
     const modeSel = h('select', { id: 'tls' },
       [['acme', 'Let\'s Encrypt (automatic)'], ['selfsigned', 'Self-signed certificate (generated)'], ['files', 'Certificate files'], ['off', 'Off: behind a reverse proxy']].map(([v, t]) => h('option', { value: v, selected: web.tls.mode === v }, t)));
@@ -2426,7 +2427,7 @@
       try {
         const res = await api('PATCH', '/settings', { web });
         if (res.restartRequired) {
-          restartBox.replaceChildren(h('div', { class: 'notice' }, 'Saved. The web interface uses the new settings after a restart.',
+          webRestart.replaceChildren(h('div', { class: 'notice' }, 'Saved. The web interface uses the new settings after a restart.',
             h('button', { type: 'button', class: 'btn small', onClick: restartNow }, 'Restart now')));
         } else toast('Saved');
       } catch (x) { webErr.textContent = x.message; }
@@ -2578,14 +2579,13 @@
       try {
         const res = await api('POST', '/restore', cfg);
         applied(res, 'Backup restored');
-        restartBox.replaceChildren(h('div', { class: 'notice' }, 'Backup restored. Restart to apply web interface settings.', h('button', { type: 'button', class: 'btn small', onClick: restartNow }, 'Restart now')));
+        restoreRestart.replaceChildren(h('div', { class: 'notice' }, 'Backup restored. Restart to apply web interface settings.', h('button', { type: 'button', class: 'btn small', onClick: restartNow }, 'Restart now')));
       } catch (x) { toast(x.message, true); }
     } });
 
     const groupHead = (id, title, text) => h('div', { class: 'group', id }, h('h2', null, title), h('p', null, text));
     fill(wrap,
       h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Who can sign in, the web interface, logs and history, updates and backups')),
-      restartBox,
 
       groupHead('g-access', 'Access', 'Who can sign in, and how.'),
       h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
@@ -2624,6 +2624,7 @@
           s.fingerprint ? h('div', { class: 'field' }, h('label', { htmlFor: 'fp' }, 'Certificate fingerprint (SHA-256)'), h('input', { id: 'fp', class: 'mono', value: s.fingerprint, readOnly: true }), h('span', { class: 'hint' }, 'The iOS app pins this when pairing')) : null),
         h('div', { class: 'section' }, fAcme, fFiles),
         webErr,
+        webRestart,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
 
       h('section', { class: 'card', 'aria-labelledby': 'dcy' },
@@ -2664,7 +2665,16 @@
           h('a', { class: 'btn', href: '/api/v1/backup' }, 'Download backup'),
           h('button', { type: 'button', class: 'btn', onClick: () => restoreInput.click() }, 'Restore from file…'),
           restoreInput),
-        copies));
+        restoreRestart,
+        copies),
+
+      h('section', { class: 'card', 'aria-labelledby': 'svc' },
+        h('h3', { id: 'svc' }, 'Service'),
+        h('p', { class: 'lead' }, 'Restarts the web interface and API. VPN connections stay up.'),
+        h('div', { class: 'actions' },
+          h('button', { type: 'button', class: 'btn', onClick: async () => {
+            if (await confirmDialog({ title: 'Restart the service?', text: 'The web interface is gone for a few seconds, then the page reloads. VPN connections stay up.', ok: 'Restart' })) restartNow();
+          } }, 'Restart service'))));
     drawCopies();
     const jumpTo = location.hash.split('#')[2];
     if (jumpTo) document.getElementById(jumpTo)?.scrollIntoView();
