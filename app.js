@@ -2154,7 +2154,7 @@
           rel ? h('div', { class: st.available ? 'upbox new' : 'upbox' }, h('span', null, 'Latest release'), h('strong', { class: 'mono' }, rel.version)) : null,
           h('div', { class: 'upbox' }, h('span', null, 'This server'), h('strong', null, st.arch ? 'Linux · ' + st.arch : 'No release file for this platform'))),
         st.enabled && st.error ? h('div', { class: 'notice err', role: 'alert' },
-          h('div', null, 'The last check failed: ' + st.error + '. ' + (st.lastOk ? 'Last worked ' + ago(st.lastOk) + '.' : '')) : null,
+          h('div', null, 'The last check failed: ' + st.error + '. ' + (st.lastOk ? 'Last worked ' + ago(st.lastOk) + '.' : ''))) : null,
         rel && !st.available ? h('p', { class: 'uptodate' }, h('span', { class: 'dot ok' }), 'GHOSTWIRE is up to date.') : null,
         notes ? h('div', { class: 'upnotes' },
           h('div', { class: 'hd' }, h('strong', null, 'What\'s new in ' + rel.version),
