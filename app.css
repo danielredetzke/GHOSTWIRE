@@ -142,6 +142,7 @@ h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; over
 .dot.off { background: transparent; border: 1.5px solid #9a9b97; }
 .dot.bad { background: var(--bad); }
 .dot.warn { background: var(--up); }
+.dnsres { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-size: 13px; }
 .dot.big { width: 10px; height: 10px; }
 .tag.plain { background: #efefeb; color: #3d3e42; }
 .badge.warn { background: var(--warn-bg); color: var(--warn-ink); }

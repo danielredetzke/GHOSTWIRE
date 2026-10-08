@@ -37,6 +37,7 @@ type Config struct {
 	Decoy   DecoyConfig   `json:"decoy"`
 	SignIn  SignInConfig  `json:"signin"`
 	Updates UpdatesConfig `json:"updates"`
+	DNS     DNSConfig     `json:"dns"` // for this service's own lookups, not the peers'
 }
 
 // UpdatesConfig sets the daily check for a newer release.
@@ -292,6 +293,9 @@ func (c *Config) applyDefaults() {
 	if c.Peers == nil {
 		c.Peers = []Peer{}
 	}
+	if c.DNS.Servers == nil {
+		c.DNS.Servers = []string{}
+	}
 }
 
 // initServer runs once, when the server has no key yet: it generates the key,
@@ -426,6 +430,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("hourly traffic history must be %d–%d hours", minHourlyHours, maxHourlyHrs)
 	} else if st.DailyDays < minDailyDays || st.DailyDays > maxDailyDays {
 		return fmt.Errorf("daily traffic history must be %d–%d days", minDailyDays, maxDailyDays)
+	}
+	if err := validateDNSServers(c.DNS.Servers); err != nil {
+		return err
 	}
 	if _, ok := decoyPages[c.Decoy.Page]; !ok {
 		return fmt.Errorf("unknown decoy page %q", c.Decoy.Page)

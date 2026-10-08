@@ -185,6 +185,10 @@ func run(configPath string) error {
 	}
 	defer logw.Close()
 	slog.Info("starting", "version", version, "config", configPath)
+
+	// Every name this service looks up goes through the DNS setting.
+	dns := newDNSRouter(cfg.DNS)
+	net.DefaultResolver = dns.resolver()
 	if !cfg.passwordSet() {
 		slog.Warn("no password set; run: sudo " + installBin + " passwd")
 		fmt.Fprintf(os.Stderr, "No password set. Run: sudo %s passwd\n", installBin)
@@ -224,7 +228,7 @@ func run(configPath string) error {
 	app := &App{
 		store: store, kernel: kernel, recon: recon, stats: stats, speeds: speeds, auth: auth, tls: webTLS,
 		logPath: logPath, logw: logw, geo: geo, updates: newUpdater(cfg.Updates), started: time.Now(), shutdown: shutdown,
-		webAddrs: []string{cfg.Web.Listen},
+		webAddrs: []string{cfg.Web.Listen}, dns: dns,
 	}
 	if cfg.Web.HTTPListen != "" && cfg.Web.TLS.Mode != "off" {
 		app.webAddrs = append(app.webAddrs, cfg.Web.HTTPListen)

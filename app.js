@@ -138,7 +138,7 @@
     const t = new Date(l.time);
     const pad = (n) => String(n).padStart(2, '0');
     const ts = t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(t.getDate()) + ' ' + pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds());
-    const rest = Object.entries(l).filter(([k]) => !['time', 'level', 'msg', 'audit'].includes(k))
+    const rest = Object.entries(l).filter(([k]) => !['time', 'level', 'msg', 'audit', 'dns'].includes(k))
       .map(([k, v]) => k + '=' + (typeof v === 'string' ? v : JSON.stringify(v))).join(' ');
     return ts + '  ' + String(l.level).padEnd(5) + '  ' + l.msg + (rest ? '  ' + rest : '');
   }
@@ -2048,14 +2048,16 @@
     let level = 'all';
     const box = h('pre', { class: 'log tall', tabindex: '0', 'aria-label': 'Log lines, newest first' });
     const pills = h('div', { class: 'pills', role: 'group', 'aria-label': 'Level filter' });
-    let audit = false;
+    let only = ''; // '' | 'audit' (changes) | 'dns' (DNS queries)
+    const pill = (on, onClick, text) => h('button', { type: 'button', class: on ? 'pill on' : 'pill', 'aria-pressed': String(on), onClick }, text);
     const draw = async () => {
       pills.replaceChildren(...[['all', 'All'], ['info', 'Info'], ['warn', 'Warn'], ['error', 'Error']].map(([k, t]) =>
-        h('button', { type: 'button', class: level === k && !audit ? 'pill on' : 'pill', 'aria-pressed': String(level === k && !audit), onClick: () => { level = k; audit = false; draw(); } }, t)),
-        h('button', { type: 'button', class: audit ? 'pill on' : 'pill', 'aria-pressed': String(audit), onClick: () => { audit = true; draw(); } }, 'Changes only'));
+        pill(level === k && !only, () => { level = k; only = ''; draw(); }, t)),
+        pill(only === 'audit', () => { level = 'all'; only = 'audit'; draw(); }, 'Changes only'),
+        pill(only === 'dns', () => { level = 'all'; only = 'dns'; draw(); }, 'DNS'));
       try {
-        const r = await api('GET', '/logs?limit=500&level=' + level + (audit ? '&audit=1' : ''));
-        box.textContent = r.lines.length ? r.lines.map(fmtLogLine).join('\n') : 'No entries at this level.';
+        const r = await api('GET', '/logs?limit=500&level=' + level + (only ? '&' + only + '=1' : ''));
+        box.textContent = r.lines.length ? r.lines.map(fmtLogLine).join('\n') : only === 'dns' ? 'No DNS queries in the log yet.' : 'No entries at this level.';
       } catch (e) { box.textContent = e.message; }
     };
     fill(wrap,
@@ -2502,6 +2504,41 @@
       try { await api('PATCH', '/settings', { decoy: { ...s.decoy, page: e.target.value } }); s.decoy.page = e.target.value; toast('Decoy page saved'); } catch (x) { e.target.value = s.decoy.page; toast(x.message, true); }
     } }, decoyPages.map(([v, t]) => h('option', { value: v, selected: s.decoy.page === v }, t)));
 
+    // DNS for this service's own lookups (not the peers')
+    const dnsField = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { htmlFor: id }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
+    const sdns = { servers: [], fallback: true, system: [], ...(s.dns || {}) };
+    const curSrv = sdns.servers.join(', ');
+    const srvInput = h('input', { id: 'sds', class: 'mono', value: curSrv || DNS_PRESETS[0][1], placeholder: '9.9.9.9, 149.112.112.112' });
+    const srvSel = h('select', { id: 'sdp' },
+      DNS_PRESETS.map(([n, v]) => h('option', { value: v, selected: v === srvInput.value }, n)),
+      h('option', { value: '', selected: !DNS_PRESETS.some(([, v]) => v === srvInput.value) }, 'Custom'));
+    srvSel.addEventListener('change', () => { if (srvSel.value) srvInput.value = srvSel.value; else { srvInput.value = ''; srvInput.focus(); } dnsResult.replaceChildren(); });
+    srvInput.addEventListener('input', () => { const m = DNS_PRESETS.find(([, v]) => v === srvInput.value.trim()); srvSel.value = m ? m[1] : ''; });
+    const srvFallback = h('input', { type: 'checkbox', checked: sdns.fallback });
+    const dnsResult = h('div');
+    const dnsCustom = h('div', { class: 'section', hidden: !sdns.servers.length },
+      h('div', { class: 'grid' }, dnsField('sdp', 'DNS provider', srvSel), dnsField('sds', 'DNS servers', srvInput, 'IP addresses, asked in this order')),
+      h('label', { class: 'check section' }, srvFallback, h('span', null, 'Fall back to the system resolver', h('br'),
+        h('span', { class: 'hint' }, 'Only when none of these servers answers. Off: lookups fail instead'))));
+    const dnsOpt = (v, title, hint) => h('label', { class: 'opt' },
+      h('input', { type: 'radio', name: 'dnsmode', value: v, checked: (v === 'custom') === (sdns.servers.length > 0), onChange: () => { dnsCustom.hidden = v !== 'custom'; dnsResult.replaceChildren(); } }),
+      h('span', null, h('strong', null, title), h('br'), h('span', { class: 'hint' }, hint)));
+    const dnsErr = h('p', { class: 'err-text', role: 'alert' });
+    const dnsBody = () => ({ servers: wrap.querySelector('input[name=dnsmode]:checked').value === 'custom' ? srvInput.value.split(/[\s,]+/).filter(Boolean) : [], fallback: srvFallback.checked });
+    const testDNS = async () => {
+      dnsErr.textContent = '';
+      dnsResult.replaceChildren(h('p', { class: 'hint' }, 'Looking up api.github.com…'));
+      try {
+        const r = await api('POST', '/dns/test', dnsBody());
+        dnsResult.replaceChildren(h('p', { class: 'dnsres' }, h('span', { class: 'dot ok' }), r.name + ' → ' + r.answer + ' in ' + r.ms + ' ms, answered by ' + r.server));
+      } catch (x) { dnsResult.replaceChildren(); dnsErr.textContent = x.message; }
+    };
+    const saveDNS = async (e) => {
+      e.preventDefault();
+      dnsErr.textContent = '';
+      try { await api('PATCH', '/settings', { dns: dnsBody() }); toast('DNS saved'); } catch (x) { dnsErr.textContent = x.message; }
+    };
+
     // data retention
     const presetSelect = (id, value, presets, unit) => {
       const opts = presets.some(([v]) => v === value) ? presets : [...presets, [value, value + ' ' + unit]].sort((a, b) => a[0] - b[0]);
@@ -2634,6 +2671,19 @@
           h('span', { class: 'hint' }, 'Hides the web interface. Turn it off again in the iOS app.'))),
         h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'dp' }, 'Decoy page'), decoySel))),
+
+      groupHead('dns', 'DNS', 'How GHOSTWIRE looks up names: update check, geo databases, Let\'s Encrypt and public IP detection. Devices use the DNS in their configs, set under Server.'),
+      h('form', { class: 'card', onSubmit: saveDNS, 'aria-labelledby': 'dnsh' },
+        h('div', { class: 'cardhead' }, h('h3', { id: 'dnsh' }, 'DNS servers'), h('span', { class: 'saves' }, 'Save, no restart')),
+        h('p', { class: 'lead' }, 'Only GHOSTWIRE uses this. Other programs on the server keep the system DNS.'),
+        h('fieldset', null, h('legend', { class: 'sr' }, 'Which DNS servers GHOSTWIRE uses'),
+          h('div', { class: 'grid' },
+            dnsOpt('system', 'System resolver', 'From /etc/resolv.conf: ' + (sdns.system.join(', ') || 'none found')),
+            dnsOpt('custom', 'These servers', 'Ignores the system settings for GHOSTWIRE only'))),
+        dnsCustom,
+        dnsResult,
+        dnsErr,
+        h('div', { class: 'formfoot' }, h('button', { type: 'button', class: 'btn', onClick: testDNS }, 'Test'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
 
       groupHead('logs', 'Logs & history', 'What the server records and for how long. The log itself is on the Log page.'),
       h('form', { class: 'card', onSubmit: saveRetention, 'aria-labelledby': 'ret' },

@@ -105,8 +105,9 @@ func setupLogging(path string, c LogConfig) (*rotatingWriter, error) {
 }
 
 // readLogTail returns up to limit lines, newest first. level filters to that
-// level and above; auditOnly keeps only change records.
-func readLogTail(path string, limit int, level string, auditOnly bool) ([]json.RawMessage, error) {
+// level and above; only keeps the records marked "audit" (changes) or "dns"
+// (DNS queries) when set.
+func readLogTail(path string, limit int, level, only string) ([]json.RawMessage, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -142,11 +143,12 @@ func readLogTail(path string, limit int, level string, auditOnly bool) ([]json.R
 		var rec struct {
 			Level string `json:"level"`
 			Audit bool   `json:"audit"`
+			DNS   bool   `json:"dns"`
 		}
 		if json.Unmarshal(line, &rec) != nil {
 			continue
 		}
-		if auditOnly && !rec.Audit {
+		if (only == "audit" && !rec.Audit) || (only == "dns" && !rec.DNS) {
 			continue
 		}
 		if parseLevel(strings.ToLower(rec.Level)) < min {

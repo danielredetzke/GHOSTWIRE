@@ -35,6 +35,7 @@ type App struct {
 	shutdown func()   // graceful stop; systemd restarts the service
 	webAddrs []string // the addresses the web server listens on now
 	endpoint endpointIPs
+	dns      *dnsRouter // this service's DNS servers; nil in tests
 }
 
 // --- helpers ---
@@ -184,6 +185,7 @@ func (a *App) routes() http.Handler {
 	g("GET /api/v1/settings", a.getSettings)
 	g("PATCH /api/v1/settings", a.patchSettings)
 	g("POST /api/v1/updates/check", a.checkUpdates)
+	g("POST /api/v1/dns/test", a.dnsTest)
 	g("POST /api/v1/restart", a.restart)
 	adm("GET /api/v1/tokens", a.listTokens)
 	adm("POST /api/v1/tokens", a.createToken)
@@ -1080,6 +1082,7 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"signin":      cfg.SignIn,
 		"geo":         a.geoStatus(),
 		"updates":     a.updates.Status(),
+		"dns":         map[string]any{"servers": cfg.DNS.Servers, "fallback": cfg.DNS.fallback(), "system": systemDNSServers("/etc/resolv.conf")},
 		"fingerprint": a.tls.Fingerprint(),
 		"logPath":     a.logPath,
 	})
@@ -1124,6 +1127,9 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := field(m, "updates", &c.Updates); err != nil {
+			return err
+		}
+		if err := field(m, "dns", &c.DNS); err != nil {
 			return err
 		}
 		return field(m, "log", &c.Log)
@@ -1221,7 +1227,14 @@ func (a *App) logs(w http.ResponseWriter, r *http.Request) {
 	if _, err := fmt.Sscan(q.Get("limit"), &limit); err != nil || limit < 1 || limit > 2000 {
 		limit = 200
 	}
-	lines, err := readLogTail(a.logPath, limit, q.Get("level"), q.Get("audit") == "1")
+	only := ""
+	switch {
+	case q.Get("audit") == "1":
+		only = "audit"
+	case q.Get("dns") == "1":
+		only = "dns"
+	}
+	lines, err := readLogTail(a.logPath, limit, q.Get("level"), only)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -1334,6 +1347,29 @@ func (a *App) applyRuntime(c *Config) {
 	}
 	a.geo.SetEnabled(c.Stats.geoEnabled())
 	a.updates.Set(c.Updates)
+	if a.dns != nil {
+		a.dns.Set(c.DNS)
+	}
+}
+
+// dnsTest looks up a name with DNS settings that are not saved yet, for the
+// Test button.
+func (a *App) dnsTest(w http.ResponseWriter, r *http.Request) {
+	var in DNSConfig
+	if err := readJSON(r, &in); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if err := validateDNSServers(in.Servers); err != nil {
+		writeErr(w, &userError{err.Error()})
+		return
+	}
+	res, err := testDNS(r.Context(), in, "api.github.com")
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // checkUpdates asks the release source now and returns what it found.
