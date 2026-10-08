@@ -52,8 +52,11 @@ questions and changes nothing until you confirm.
   `inet GHOSTWIRE` table.
 - **Live peer changes:** only peers that changed are touched, the same effect
   as `wg syncconf`, so connected peers stay connected.
-- **IPv4 and IPv6:** IPv6 inside the tunnel is turned on automatically when the
+- **IPv4 and IPv6:** IPv6 inside the tunnel is turned on at install when the
   server has a global IPv6 address.
+- **Routing and firewall:** NAT to the internet, peers reaching each other,
+  peers reaching the server's LAN (off by default) and accepting the WireGuard
+  port, each switched under Server.
 - **Traffic history:** kept in `stats.json`, hourly for 48 h and daily for
   400 days by default (Settings → Logs & history).
 - **Protection check:** the dashboard shows the address websites see for your
@@ -77,6 +80,8 @@ questions and changes nothing until you confirm.
   the server is sent; the check can be switched off.
 - **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
   certificate files, or plain HTTP behind a reverse proxy.
+- **Backup and restore:** all settings, peers and users as one file
+  (Settings → Upkeep), to restore on this or a new server.
 
 ## Security
 
@@ -89,10 +94,11 @@ questions and changes nothing until you confirm.
 - **The service is not root.** It runs as user `ghostwire` with only
   `CAP_NET_ADMIN` and `CAP_NET_BIND_SERVICE`, and can write only to
   `/opt/ghostwire`.
-- **Sign-in:** one or more users, all admins. Passwords are stored as argon2id hashes.
-  After 5 failed attempts from one IP address, sign-in from it is locked for 15
-  minutes; wrong two-step codes count too. Sessions use an
-  HttpOnly, SameSite=Strict cookie and last 12 hours by default.
+- **Sign-in:** one or more users, all admins. Passwords are stored as argon2id
+  hashes. After 5 failed attempts from one IP address (for IPv6, one /64
+  network), sign-in from it is locked for 15 minutes; wrong two-step codes
+  count too. Sessions use an HttpOnly, SameSite=Strict cookie and last 12 hours
+  by default.
 - **Two-step sign-in:** each user can add an authenticator app (TOTP) and
   passkeys under My account. A passkey signs in on its own, without username
   and password, and also works as the second step after a password. It can live
@@ -110,12 +116,13 @@ questions and changes nothing until you confirm.
 ## Requirements
 
 - Linux with kernel 5.6 or newer (WireGuard built in), nftables and systemd
+- x86-64, ARM64, or 32-bit ARMv7 (Raspberry Pi OS 32-bit)
 - Ports: UDP 51820 (WireGuard; another port can be chosen at install), TCP 443
   (web), TCP 80 (optional, Let's Encrypt http-01 and redirect)
 
 ## Build
 
-Building needs Go 1.27 or newer. The binaries are static (no cgo), so they run
+Building needs Go 1.27.1 or newer. The binaries are static (no cgo), so they run
 on any Linux distribution.
 
 ```sh
@@ -158,13 +165,17 @@ Summary
   Endpoint        vpn.example.net:51820/udp
   Tunnel network  10.214.86.0/24 (random free range) · IPv6 on
   Firewall        443/tcp, 80/tcp, 51820/udp must be reachable
+  Admin           admin (password set)
 
 Install with these settings? [Y/n]
 ```
 
 A domain turns on Let's Encrypt and is also the default WireGuard endpoint.
 Without one, the web interface uses a self-signed certificate and the
-endpoint defaults to the server's detected public IP.
+endpoint defaults to the server's detected public IP. A new install picks a
+random free /24 tunnel network and sets MTU 1420, Quad9 DNS (9.9.9.9,
+149.112.112.112) and a full tunnel (`0.0.0.0/0, ::/0`) as client defaults; all
+of them can be changed later under Server.
 
 The binary installs itself, so instead of the script you can also copy a
 release to the server and run `sudo ./GHOSTWIRE install`; the same questions
@@ -222,17 +233,19 @@ On a server that runs pivpn's WireGuard, a new install offers to take it
 over. Devices keep their current config: GHOSTWIRE takes pivpn's server key,
 port, MTU, tunnel networks (IPv4 and IPv6), endpoint, DNS, AllowedIPs and
 keepalive, and every client with its public key, preshared key and addresses.
-Clients pivpn switched off are imported switched off, with the note
-"Imported from pivpn". Client private keys, which pivpn keeps in
-`/etc/wireguard/configs`, are not read or stored.
+Every client gets the note "Imported from pivpn", and clients pivpn switched
+off are imported switched off. A client name GHOSTWIRE does not accept
+(1–32 letters, digits and `. @ _ -`) is renamed, and the summary shows how.
+Client private keys, which pivpn keeps in `/etc/wireguard/configs`, are not
+read or stored.
 
 After the summary, install notes which peers are connected, stops pivpn's
 WireGuard (`systemctl disable --now wg-quick@wg0`), starts GHOSTWIRE on the
 same `wg0` and waits up to 30 s for those peers to come back. pivpn's own NAT
 rules would keep working next to GHOSTWIRE's NAT setting, so install removes
 them and comments them out in `/etc/iptables/rules.v4`/`rules.v6` (or ufw's
-`before.rules`); `GHOSTWIRE uninstall` puts them back. Devices that
-send traffic reconnect after about 15 s; an idle device reconnects the next
+`before.rules`/`before6.rules`); `GHOSTWIRE uninstall` puts them back.
+Devices that send traffic reconnect after about 15 s; an idle device reconnects the next
 time it sends something. The wait only reports: Enter skips it, and so does
 `-no-wait` in scripts. If the service does not stay running, install puts
 pivpn back as it was.
@@ -242,17 +255,23 @@ run next to pivpn otherwise. pivpn's files stay as they were. Manage peers in
 GHOSTWIRE from then on, delete `/etc/wireguard/configs` once everything works,
 and don't run `pivpn uninstall`, which removes WireGuard packages. To go back
 to pivpn: `GHOSTWIRE uninstall`, then `systemctl enable --now wg-quick@wg0`.
-While pivpn's WireGuard is switched on, install refuses to run.
+Once GHOSTWIRE is installed, running install again refuses while pivpn's
+WireGuard is switched on.
 
 ## Commands (as root)
 
 | Command | What it does |
 |---|---|
 | `GHOSTWIRE install [-domain d] [-email e] [-endpoint h] [-port p] [-import-pivpn] [-no-wait] [-y]` | Sets up and starts the service, as above. Asks for the settings no flag gave; `-y` never asks. On a pivpn server it takes over pivpn's WireGuard (see above). |
-| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>` (keeping the newest 3 such copies), replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions without `-force`. |
-| `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0` and the firewall table. `-purge` also deletes `/opt/ghostwire` and the user. |
+| `GHOSTWIRE update [-force]` | Run from the new binary, e.g. `sudo /tmp/GHOSTWIRE update`. Checks that it can read the current `config.json` (nothing changes if not), backs up the config to `config.json.bak-<old version>` (keeping the newest 3 such copies), replaces the binary, updates the unit if needed and restarts. If the new version does not stay up, the old binary and config are put back and restarted. It refuses older versions, and does nothing when the same build is installed, without `-force`. |
+| `GHOSTWIRE uninstall [-purge] [-y]` | Stops and removes the service, `wg0`, the firewall table and the systemd, sysctl and module files, and puts pivpn's NAT rules back after a takeover. `-purge` also deletes `/opt/ghostwire` and the user; it asks you to type `delete` unless `-y` is given. |
 | `GHOSTWIRE passwd [username]` | Sets a user's password (default: the first user) and reloads the running service. The way back in if you are locked out. |
 | `GHOSTWIRE version` | Prints the version. |
+
+Without a command, the binary runs the service: `GHOSTWIRE [-config path]`
+(default: `config.json` next to the binary). `-check` validates `config.json`
+for this version and exits; `-down` removes the WireGuard interface and the
+firewall table and exits.
 
 Updating restarts only the management service. VPN connections stay up,
 because `wg0` lives in the kernel.
@@ -263,12 +282,18 @@ because `wg0` lives in the kernel.
 
 | Mode | What it does |
 |---|---|
-| `acme` | Let's Encrypt, automatic. Uses tls-alpn-01 on :443, or http-01 when `httpListen` is set. Certificates are cached in `/opt/ghostwire/acme`. `"staging": true` uses the test CA. |
+| `acme` | Let's Encrypt, automatic. Answers tls-alpn-01 on `listen` and http-01 on `httpListen`. Certificates are cached in `/opt/ghostwire/acme`. `"staging": true` uses the test CA. |
 | `selfsigned` | Generates a certificate in `/opt/ghostwire/tls`. The iOS app pins its fingerprint. |
 | `files` | Uses `certFile` and `keyFile`, and reloads them when they change. |
 | `off` | Plain HTTP, for running behind a reverse proxy on localhost. |
 
-After editing `config.json` by hand, run `sudo systemctl reload ghostwire`.
+`web.listen` is `:443` by default. `web.httpListen` is `:80` in mode `acme`
+and redirects to HTTPS; in the other modes it is empty (off) unless set.
+
+After editing `config.json` by hand, check it with
+`sudo /opt/ghostwire/GHOSTWIRE -check`, then run
+`sudo systemctl reload ghostwire`. A reload applies everything except the
+listen addresses and `web.tls`, which need `sudo systemctl restart ghostwire`.
 
 ## Files in /opt/ghostwire
 
@@ -385,11 +410,13 @@ The iOS app is currently in beta testing. For an invite, email
 ## Development
 
 On macOS (or any non-Linux system), `make dev` starts the app on
-http://127.0.0.1:8080 with a traffic simulator in place of the kernel. Set a
-password first:
+http://127.0.0.1:8080 with a traffic simulator in place of the kernel. The
+first run creates `dev/config.json`; stop it, set a password, and start again:
 
 ```sh
-make build && mkdir -p dev && ./GHOSTWIRE -config dev/config.json -passwd
+make dev                                   # Ctrl-C once it is running
+./GHOSTWIRE -config dev/config.json -passwd
+make dev
 ```
 
 ## License
