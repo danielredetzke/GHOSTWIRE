@@ -127,24 +127,14 @@ make test
 
 ## Install
 
-The quickest way is the [one-line install](#quick-start). Arguments after
-`sh -s --` are passed on to `install` and skip their questions:
+The easiest way is the one-line install on the server:
 
 ```sh
-curl -fsSL https://ghostwi.re/install | sh -s -- -domain vpn.example.net -email you@example.net
+curl -fsSL https://ghostwi.re/install | sh
 ```
 
-The binary installs itself, so you can also copy it to the server and run it
-as root:
-
-```sh
-scp dist/amd64/GHOSTWIRE server:/tmp/
-ssh server
-sudo /tmp/GHOSTWIRE install
-```
-
-It asks a few questions, shows a summary and changes nothing until you
-confirm:
+It asks a few questions, including the admin password, shows a summary and
+changes nothing until you confirm:
 
 ```
 Web interface
@@ -176,15 +166,21 @@ A domain turns on Let's Encrypt and is also the default WireGuard endpoint.
 Without one, the web interface uses a self-signed certificate and the
 endpoint defaults to the server's detected public IP.
 
+The binary installs itself, so instead of the script you can also copy a
+release to the server and run `sudo ./GHOSTWIRE install`; the same questions
+follow.
+
 ### Unattended install
 
-For scripts, cloud-init or Ansible, give the settings as flags. Questions
-are skipped for every flag given, and entirely with `-y` or when there is no
-terminal:
+For scripts, cloud-init or Ansible, give the settings as flags and add `-y`,
+so nothing is asked. The admin password is then passed in with `echo`:
 
 ```sh
-sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -port 51820
+echo "MyLongPassword" | sudo ./GHOSTWIRE install -y -domain vpn.example.net -email you@example.net
 ```
+
+Without the password, install stops before changing anything. A server that
+is already installed needs no password. All flags:
 
 | Flag | Default |
 |---|---|
@@ -195,9 +191,7 @@ sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -p
 | `-import-pivpn` | off: see [Moving from pivpn](#moving-from-pivpn) |
 | `-no-wait` | off: after a pivpn takeover, don't wait for devices to reconnect |
 
-The admin password is then read from standard input, e.g.
-`echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`; without it, install stops.
-Every value, the password included, is checked before anything is changed.
+Every value is checked before anything is changed.
 
 `install`:
 
