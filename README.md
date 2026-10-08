@@ -185,14 +185,15 @@ echo "MyLongPassword" | sudo ./GHOSTWIRE install -y -domain vpn.example.net -ema
 Without the password, install stops before changing anything. A server that
 is already installed needs no password. All flags:
 
-| Flag | Default |
-|---|---|
-| `-domain` | none: self-signed certificate |
-| `-email` | none |
-| `-endpoint` | the address devices connect to: the domain, else the server's detected public IP; when already installed, the current one |
-| `-port` | 51820, or the current port when already installed |
-| `-import-pivpn` | off: see [Moving from pivpn](#moving-from-pivpn) |
-| `-no-wait` | off: after a pivpn takeover, don't wait for devices to reconnect |
+| Flag | Description | Default |
+|---|---|---|
+| `-domain` | Domain for the web interface; gets a Let's Encrypt certificate | none: self-signed certificate |
+| `-email` | Contact email for Let's Encrypt | none |
+| `-endpoint` | Host or IP devices connect to | the domain, else the server's detected public IP; when already installed, the current one |
+| `-port` | UDP port WireGuard listens on | 51820, or the current port when already installed |
+| `-import-pivpn` | Takes over a pivpn WireGuard server and its clients; see [Moving from pivpn](#moving-from-pivpn) | off |
+| `-no-wait` | After a pivpn takeover, doesn't wait for devices to reconnect | off |
+| `-y` | Never asks; uses the flags and defaults | off |
 
 Every value is checked before anything is changed.
 
