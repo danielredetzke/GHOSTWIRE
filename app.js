@@ -596,7 +596,11 @@
   function drawUpdateHint() {
     if (!verRow) return;
     const v = me.updateAvailable;
-    fill(verRow, h('span', null, 'v' + me.version.replace(/^v/, '')),
+    const cur = 'v' + me.version.replace(/^v/, '');
+    // A release build links to its release; a dev build has none.
+    fill(verRow, /^v\d+\.\d+\.\d+$/.test(cur)
+      ? h('a', { class: 'ver', href: 'https://github.com/danielredetzke/GHOSTWIRE/releases/tag/' + cur, target: '_blank', rel: 'noopener', title: 'Release notes for ' + cur }, cur, h('span', { class: 'sr' }, ' release notes (opens in a new tab)'))
+      : h('span', { class: 'ver' }, cur),
       v ? h('a', { class: 'upd', href: '#/settings#updates' }, v + ' available') : null);
     const set = navLinks['#/settings'];
     set.querySelectorAll('.pip, .sr').forEach((e) => e.remove());
@@ -656,7 +660,8 @@
     }
     const args = hash.match(route[0]).slice(1);
     const wrap = h('div', { class: 'wrap' }, h('p', { class: 'muted' }, 'Loading…'));
-    main.replaceChildren(wrap);
+    main.replaceChildren(wrap, h('footer', { class: 'pagefoot' },
+      '© 2026 Daniel Redetzke · ', ext('https://github.com/danielredetzke/GHOSTWIRE/blob/main/LICENSE', 'MIT License')));
     window.scrollTo(0, 0);
     try {
       await route[2](wrap, ...args);

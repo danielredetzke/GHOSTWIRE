@@ -81,7 +81,9 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
 .side .acct strong { font-size: 14px; font-weight: 500; color: #fff; overflow: hidden; text-overflow: ellipsis; }
 .side .acct span span { color: #a9aaa5; }
 .side .avatar { width: 28px; height: 28px; border-radius: 50%; background: #3a3b41; display: grid; place-items: center; flex: none; font-size: 13px; font-weight: 600; color: #fff; }
-.side .footrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 12px 0; }
+.side .footrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px 0; }
+.side .footrow .ver { font-size: 11.5px; font-weight: 500; color: #b4b5ba; border: 1px solid #3a3b41; padding: 2px 8px; border-radius: 999px; white-space: nowrap; text-decoration: none; }
+.side .footrow a.ver:hover { color: #fff; border-color: #5a5b61; }
 .side .footrow .upd { font-size: 11.5px; font-weight: 500; color: #cfe2f8; background: #1f3550; border: 1px solid #2d4a6e; padding: 2px 8px; border-radius: 999px; text-decoration: none; white-space: nowrap; }
 .side .footrow .upd:hover { color: #fff; }
 .side .nav .pip { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: #6aa6ea; }
@@ -90,6 +92,7 @@ a.brand, a.brand:hover { color: #fff; text-decoration: none; }
    place while the page scrolls, so the account link is always visible. */
 @media (min-width: 800px) { .side { position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto; } }
 .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.pagefoot { max-width: 1120px; margin: 48px auto 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
 @media (max-width: 640px) { .main { padding: 20px 16px 40px; } }
 
 /* page head */
