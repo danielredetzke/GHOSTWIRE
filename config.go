@@ -40,8 +40,7 @@ type Config struct {
 
 // UpdatesConfig sets the daily check for a newer release.
 type UpdatesConfig struct {
-	Check  *bool  `json:"check,omitempty"` // default on
-	Source string `json:"source"`          // gitea | github, see updateSources
+	Check *bool `json:"check,omitempty"` // default on
 }
 
 func (c UpdatesConfig) checkEnabled() bool { return c.Check == nil || *c.Check }
@@ -281,9 +280,6 @@ func (c *Config) applyDefaults() {
 	if c.Decoy.Page == "" {
 		c.Decoy.Page = "nginx"
 	}
-	if c.Updates.Source == "" {
-		c.Updates.Source = "gitea"
-	}
 	if c.APITokens == nil {
 		c.APITokens = []APIToken{}
 	}
@@ -421,9 +417,6 @@ func (c *Config) validate() error {
 	}
 	if _, ok := decoyPages[c.Decoy.Page]; !ok {
 		return fmt.Errorf("unknown decoy page %q", c.Decoy.Page)
-	}
-	if _, ok := updateSources[c.Updates.Source]; !ok {
-		return fmt.Errorf("update source must be gitea or github")
 	}
 	if err := validateListen(c.Web.Listen, "listen address", false); err != nil {
 		return err

@@ -68,14 +68,14 @@ func TestUpdater(t *testing.T) {
 	version = "v0.3.2"
 	defer func() { version = old }()
 
-	u := newUpdater(UpdatesConfig{Source: "gitea"})
+	u := newUpdater(UpdatesConfig{})
 	var asked string
 	u.fetch = func(_ context.Context, url string) (*Release, error) {
 		asked = url
 		return &Release{Version: "v0.4.0"}, nil
 	}
 	u.Check(context.Background())
-	if asked != updateSources["gitea"].API {
+	if asked != releaseAPI {
 		t.Errorf("asked %q", asked)
 	}
 	st := u.Status()
@@ -83,7 +83,7 @@ func TestUpdater(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 	if st.Arch != "" {
-		want := "https://git.redetzke.aero/Redetzke/GHOSTWIRE/releases/download/v0.4.0/GHOSTWIRE-v0.4.0-linux-" + st.Arch
+		want := "https://github.com/danielredetzke/GHOSTWIRE/releases/download/v0.4.0/GHOSTWIRE-v0.4.0-linux-" + st.Arch
 		if st.FileURL != want || !strings.HasSuffix(st.SumsURL, "/v0.4.0/SHA256SUMS") {
 			t.Errorf("downloads = %q, %q", st.FileURL, st.SumsURL)
 		}
@@ -96,15 +96,11 @@ func TestUpdater(t *testing.T) {
 		t.Errorf("after a failed check: %+v", st)
 	}
 
-	// Another source forgets what the old one said; switching off hides it.
-	u.Set(UpdatesConfig{Source: "github"})
-	if st := u.Status(); st.Latest != nil || st.Error != "" || st.SourceURL != updateSources["github"].Repo {
-		t.Errorf("after changing the source: %+v", st)
-	}
+	// Switching off hides it.
 	off := false
 	u.fetch = func(context.Context, string) (*Release, error) { return &Release{Version: "v0.4.0"}, nil }
 	u.Check(context.Background())
-	u.Set(UpdatesConfig{Source: "github", Check: &off})
+	u.Set(UpdatesConfig{Check: &off})
 	if u.Available() != "" || u.Status().Enabled {
 		t.Error("still reports an update with the check off")
 	}

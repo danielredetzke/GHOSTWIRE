@@ -15,20 +15,15 @@ import (
 	"time"
 )
 
-// The update check asks one of the two places releases are published for
-// the latest one. Both carry the same tags and files.
-var updateSources = map[string]struct {
-	Name string // shown in the web interface
-	API  string // latest release, as JSON
-	Repo string // web page of the repository; downloads are under it
-}{
-	"gitea":  {"Gitea", "https://git.redetzke.aero/api/v1/repos/Redetzke/GHOSTWIRE/releases/latest", "https://git.redetzke.aero/Redetzke/GHOSTWIRE"},
-	"github": {"GitHub", "https://api.github.com/repos/danielredetzke/GHOSTWIRE/releases/latest", "https://github.com/danielredetzke/GHOSTWIRE"},
-}
+// The update check asks GitHub for the latest release.
+const (
+	releaseAPI  = "https://api.github.com/repos/danielredetzke/GHOSTWIRE/releases/latest"
+	releaseRepo = "https://github.com/danielredetzke/GHOSTWIRE" // downloads are under it
+)
 
 const updateCheckFreq = 24 * time.Hour
 
-// Release is the latest published release as the source reports it.
+// Release is the latest published release as GitHub reports it.
 type Release struct {
 	Version   string    `json:"version"` // tag, e.g. "v0.4.0"
 	Published time.Time `json:"published"`
@@ -40,7 +35,6 @@ type Release struct {
 // and the Dashboard through /auth/me.
 type UpdateStatus struct {
 	Enabled   bool       `json:"enabled"`
-	Source    string     `json:"source"`
 	Current   string     `json:"current"`
 	Latest    *Release   `json:"latest"`
 	Available bool       `json:"available"` // Latest is newer than Current
@@ -49,11 +43,10 @@ type UpdateStatus struct {
 	LastOK    *time.Time `json:"lastOk"` // last attempt that worked
 	// Download links for this server's platform; empty when no release
 	// file is built for it.
-	Arch      string `json:"arch"`
-	File      string `json:"file,omitempty"`
-	FileURL   string `json:"fileUrl,omitempty"`
-	SumsURL   string `json:"sumsUrl,omitempty"`
-	SourceURL string `json:"sourceUrl"` // repository page of the source
+	Arch    string `json:"arch"`
+	File    string `json:"file,omitempty"`
+	FileURL string `json:"fileUrl,omitempty"`
+	SumsURL string `json:"sumsUrl,omitempty"`
 }
 
 type Updater struct {
@@ -62,7 +55,6 @@ type Updater struct {
 	fetch   func(ctx context.Context, url string) (*Release, error) // replaced in tests
 
 	mu      sync.Mutex
-	source  string
 	latest  *Release
 	checked *time.Time
 	lastOK  *time.Time
@@ -70,24 +62,23 @@ type Updater struct {
 }
 
 func newUpdater(c UpdatesConfig) *Updater {
-	u := &Updater{kick: make(chan struct{}, 1), fetch: fetchRelease, source: c.Source}
+	u := &Updater{kick: make(chan struct{}, 1), fetch: fetchRelease}
 	u.enabled.Store(c.checkEnabled())
 	return u
 }
 
-// Set applies the settings. A new source or switching the check on checks
-// at once; switching it off forgets what the last check found.
+// Set applies the settings. Switching the check on checks at once;
+// switching it off forgets what the last check found.
 func (u *Updater) Set(c UpdatesConfig) {
 	if u == nil {
 		return
 	}
 	on := c.checkEnabled()
 	u.mu.Lock()
-	changed := u.source != c.Source || u.enabled.Load() != on
-	if u.source != c.Source || !on {
+	changed := u.enabled.Load() != on
+	if !on {
 		u.latest, u.checked, u.lastOK, u.err = nil, nil, nil, ""
 	}
-	u.source = c.Source
 	u.enabled.Store(on)
 	u.mu.Unlock()
 	if changed && on {
@@ -115,24 +106,18 @@ func (u *Updater) Run(stop <-chan struct{}) {
 	}
 }
 
-// Check asks the source for the latest release now.
+// Check asks GitHub for the latest release now.
 func (u *Updater) Check(ctx context.Context) {
-	u.mu.Lock()
-	source := u.source
-	u.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rel, err := u.fetch(ctx, updateSources[source].API)
+	rel, err := u.fetch(ctx, releaseAPI)
 	now := time.Now()
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.source != source { // the source changed meanwhile; that check counts
-		return
-	}
 	u.checked = &now
 	if err != nil {
 		u.err = err.Error()
-		slog.Warn("update check failed", "source", source, "err", err)
+		slog.Warn("update check failed", "err", err)
 		return
 	}
 	u.latest, u.lastOK, u.err = rel, &now, ""
@@ -147,16 +132,15 @@ func (u *Updater) Status() UpdateStatus {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	src := updateSources[u.source]
 	st := UpdateStatus{
-		Enabled: u.enabled.Load(), Source: u.source, Current: version, Latest: u.latest,
-		Checked: u.checked, Error: u.err, LastOK: u.lastOK, Arch: releaseArch(), SourceURL: src.Repo,
+		Enabled: u.enabled.Load(), Current: version, Latest: u.latest,
+		Checked: u.checked, Error: u.err, LastOK: u.lastOK, Arch: releaseArch(),
 	}
 	if u.latest != nil {
 		st.Available = newerVersion(u.latest.Version, version)
 		if st.Arch != "" {
 			st.File = fmt.Sprintf("%s-%s-linux-%s", appName, u.latest.Version, st.Arch)
-			base := src.Repo + "/releases/download/" + u.latest.Version + "/"
+			base := releaseRepo + "/releases/download/" + u.latest.Version + "/"
 			st.FileURL, st.SumsURL = base+st.File, base+"SHA256SUMS"
 		}
 	}
@@ -198,7 +182,6 @@ func fetchRelease(ctx context.Context, url string) (*Release, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, req.URL.Host)
 	}
-	// GitHub and Gitea name these fields the same.
 	var r struct {
 		Tag        string    `json:"tag_name"`
 		Body       string    `json:"body"`

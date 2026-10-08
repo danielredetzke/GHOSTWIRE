@@ -2134,9 +2134,6 @@
         if (s.updates.enabled) await checkNow(); else setStatus(s.updates);
       } catch (x) { toast(x.message, true); draw(); }
     };
-    const SOURCES = [['gitea', 'Gitea', 'git.redetzke.aero/Redetzke/GHOSTWIRE'], ['github', 'GitHub', 'github.com/danielredetzke/GHOSTWIRE']];
-    const srcName = () => SOURCES.find(([k]) => k === st.source)[1];
-
     function draw() {
       const cur = 'v' + st.current.replace(/^v/, '');
       const rel = st.latest;
@@ -2157,12 +2154,12 @@
           rel ? h('div', { class: st.available ? 'upbox new' : 'upbox' }, h('span', null, 'Latest release'), h('strong', { class: 'mono' }, rel.version)) : null,
           h('div', { class: 'upbox' }, h('span', null, 'This server'), h('strong', null, st.arch ? 'Linux · ' + st.arch : 'No release file for this platform'))),
         st.enabled && st.error ? h('div', { class: 'notice err', role: 'alert' },
-          h('div', null, 'The last check failed: ' + st.error + '. ' + (st.lastOk ? 'Last worked ' + ago(st.lastOk) + '. ' : '') + 'Try the other source.')) : null,
+          h('div', null, 'The last check failed: ' + st.error + '. ' + (st.lastOk ? 'Last worked ' + ago(st.lastOk) + '.' : '')) : null,
         rel && !st.available ? h('p', { class: 'uptodate' }, h('span', { class: 'dot ok' }), 'GHOSTWIRE is up to date.') : null,
         notes ? h('div', { class: 'upnotes' },
           h('div', { class: 'hd' }, h('strong', null, 'What\'s new in ' + rel.version),
-            h('span', { class: 'muted' }, 'Released ' + fmtDate(rel.published) + ' · from ' + srcName()),
-            ext(rel.url, 'Full notes on ' + srcName())),
+            h('span', { class: 'muted' }, 'Released ' + fmtDate(rel.published)),
+            ext(rel.url, 'Full notes on GitHub')),
           /security/i.test(notes.summary) ? h('p', { class: 'notice' }, 'Includes security fixes.') : null,
           notes.summary ? h('p', null, mdInline(notes.summary)) : null,
           notes.items.length ? h('ul', null, notes.items.map((t) => h('li', null, mdInline(t)))) : null) : null,
@@ -2171,16 +2168,11 @@
           h('pre', { class: 'code' }, cmds),
           h('div', null, h('button', { type: 'button', class: 'btn small', onClick: () => copy(cmds) }, 'Copy commands'))) : null,
         st.available && !st.file ? h('p', null, 'No release file is built for this platform. ', ext(rel.url, 'See the release')) : null,
-        h('fieldset', { class: 'section' }, h('legend', { class: 'legend' }, 'Release source'),
-          h('div', { class: 'grid' }, SOURCES.map(([k, name, where]) => h('label', { class: 'opt' },
-            h('input', { type: 'radio', name: 'upsrc', value: k, checked: st.source === k, onChange: () => save({ source: k }) }),
-            h('span', null, h('strong', null, name), h('br'), h('span', { class: 'hint mono' }, where))))),
-          h('span', { class: 'hint' }, 'Both carry the same releases and files. The check, the release notes and the download links use the source you pick.')),
         h('div', { class: 'uprow' },
           h('label', { class: 'check' },
             h('input', { type: 'checkbox', checked: st.enabled, onChange: (e) => save({ check: e.target.checked }) }),
             h('span', null, 'Check for updates once a day', h('br'),
-              h('span', { class: 'hint' }, 'Asks ' + new URL(st.sourceUrl).host + ' for the latest release. Nothing about this server is sent.'))),
+              h('span', { class: 'hint' }, 'Asks github.com for the latest release. Nothing about this server is sent.'))),
           st.enabled ? h('button', { type: 'button', class: 'btn small', onClick: (e) => checkNow(e.currentTarget) }, 'Check now') : null));
     }
     draw();

@@ -20,11 +20,10 @@ On a Linux server, run:
 curl -fsSL https://ghostwi.re/install | sh
 ```
 
-The short link leads to the script on Gitea. The same script can also be
-fetched directly from Gitea or from the GitHub mirror:
+The short link leads to the script on GitHub, which can also be fetched
+directly:
 
 ```sh
-curl -fsSL https://git.redetzke.aero/Redetzke/GHOSTWIRE/raw/branch/main/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/danielredetzke/GHOSTWIRE/main/install.sh | sh
 ```
 
@@ -72,11 +71,10 @@ questions and changes nothing until you confirm.
 - **Logs:** written to `GHOSTWIRE.jsonl`, rotated at 10 MB with 5 old files
   kept by default, and shown on the Log page. Changes are marked as audit
   entries.
-- **Update notice:** once a day the server asks Gitea or GitHub (your choice
-  under Settings → Updates) for the latest release. A newer one shows in the
-  sidebar, on the Dashboard and in Settings, with its release notes and the
-  commands to update this server. Nothing about the server is sent; the check
-  can be switched off.
+- **Update notice:** once a day the server asks GitHub for the latest
+  release. A newer one shows in the sidebar, on the Dashboard and in Settings,
+  with its release notes and the commands to update this server. Nothing about
+  the server is sent; the check can be switched off.
 - **HTTPS built in:** Let's Encrypt, a self-signed certificate, your own
   certificate files, or plain HTTP behind a reverse proxy.
 
@@ -355,8 +353,8 @@ link, the peer's current keys keep working until the link is opened.
 
 `GET /settings` includes `updates`: the running and latest version,
 `available`, the release notes and the download links for this server's
-platform. `PATCH /settings` `{"updates": {"source": "gitea"|"github",
-"check": false}}` picks the source or switches the daily check off;
+platform. `PATCH /settings` `{"updates": {"check": false}}` switches the
+daily check off;
 `POST /updates/check` checks now. `GET /auth/me` has `updateAvailable` with
 the newer version while there is one.
 
