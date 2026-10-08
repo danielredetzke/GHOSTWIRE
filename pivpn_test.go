@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -331,5 +332,93 @@ func TestPivpnWaitBack(t *testing.T) {
 	back, skipped = waitBack(pv, []string{"a", "b"}, sample("ka"), time.Now(), time.Minute, time.Second, skip)
 	if !skipped || time.Since(start) > time.Second {
 		t.Fatalf("skip: %v %v", back, skipped)
+	}
+}
+
+func TestCheckPivpn(t *testing.T) {
+	pv := &pivpnSetup{Dev: "wg0"}
+	for _, tc := range []struct {
+		name                               string
+		existing, importPivpn, interactive bool
+		pv                                 *pivpnSetup
+		unit                               string
+		want                               string // part of the error, "" for none
+	}{
+		{"plain new install", false, false, false, nil, "", ""},
+		{"takeover in a terminal", false, false, true, pv, "", ""},
+		{"takeover with -import-pivpn", false, true, false, pv, "", ""},
+		{"pivpn without terminal or flag", false, false, false, pv, "", "add -import-pivpn"},
+		{"-import-pivpn without pivpn", false, true, false, nil, "", "not found"},
+		{"-import-pivpn on an existing install", true, true, false, nil, "", "new install"},
+		{"existing, pivpn switched off", true, false, false, nil, "", ""},
+		{"existing, pivpn switched on again", true, false, true, nil, "wg-quick@wg0", "systemctl disable --now wg-quick@wg0"},
+		{"existing, pivpn on, with -import-pivpn", true, true, false, nil, "wg-quick@wg0", "is switched on"},
+	} {
+		err := checkPivpn(tc.existing, tc.importPivpn, tc.interactive, tc.pv, tc.unit)
+		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestStdinPassword(t *testing.T) {
+	read := func(in string) (string, error) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.WriteString(in)
+		w.Close()
+		old := os.Stdin
+		os.Stdin = r
+		defer func() { os.Stdin = old; r.Close() }()
+		return stdinPassword("admin")
+	}
+	for _, in := range []string{"a long test password\n", "a long test password"} {
+		hash, err := read(in)
+		if err != nil || !verifyPassword(hash, "a long test password") {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+	for _, in := range []string{"", "\n", "short\n"} {
+		if _, err := read(in); err == nil || !strings.Contains(err.Error(), "nothing was changed") {
+			t.Errorf("%q should be refused before any change: %v", in, err)
+		}
+	}
+}
+
+func TestPivpnNATLines(t *testing.T) {
+	rulesV4 := `*nat
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -s 10.6.0.0/24 -o eth0 -m comment --comment wireguard-nat-rule -j MASQUERADE
+-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+COMMIT
+`
+	off, lines := switchNATLines(rulesV4, true)
+	if len(lines) != 1 || !strings.Contains(off, natOffMark+"-A POSTROUTING -s 10.6.0.0/24") || !strings.Contains(off, "\n-A POSTROUTING -s 172.17.0.0/16") {
+		t.Fatalf("switching off:\n%s", off)
+	}
+	if again, lines := switchNATLines(off, true); again != off || len(lines) != 0 {
+		t.Error("switching off twice should change nothing")
+	}
+	on, lines := switchNATLines(off, false)
+	if on != rulesV4 || len(lines) != 1 {
+		t.Fatalf("switching on should give the original back:\n%s", on)
+	}
+	want := []string{"POSTROUTING", "-s", "10.6.0.0/24", "-o", "eth0", "-m", "comment", "--comment", "wireguard-nat-rule", "-j", "MASQUERADE"}
+	if r := pivpnNATRules(strings.Join(lines, "")); len(r) != 1 || !slices.Equal(r[0], want) {
+		t.Errorf("rule: %q", r)
+	}
+
+	// ufw's before.rules (-I), and iptables -S output with other rules.
+	ufw := "-I POSTROUTING -s 10.6.0.0/24 -o eth0 -j MASQUERADE -m comment --comment wireguard-nat-rule\n"
+	if r := pivpnNATRules(ufw); len(r) != 1 || r[0][0] != "POSTROUTING" {
+		t.Errorf("ufw rule: %q", r)
+	}
+	s := "-P POSTROUTING ACCEPT\n-A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE\n" +
+		"-A POSTROUTING -s fd11:5ee:bad:c0de::/64 -o eth0 -m comment --comment wireguard-nat-rule -j MASQUERADE\n" +
+		`-A POSTROUTING -m comment --comment "wireguard-nat-rule copy" -j MASQUERADE` + "\n"
+	if r := pivpnNATRules(s); len(r) != 1 || r[0][2] != "fd11:5ee:bad:c0de::/64" {
+		t.Errorf("iptables -S: %q", r)
 	}
 }

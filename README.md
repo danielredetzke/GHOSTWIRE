@@ -196,19 +196,18 @@ sudo /tmp/GHOSTWIRE install -y -domain vpn.example.net -email you@example.net -p
 | `-no-wait` | off: after a pivpn takeover, don't wait for devices to reconnect |
 
 The admin password is then read from standard input, e.g.
-`echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`. Every value is checked
-before anything is changed.
+`echo "$PASSWORD" | sudo ./GHOSTWIRE install -y …`; without it, install stops.
+Every value, the password included, is checked before anything is changed.
 
 `install`:
 
 1. creates the system user `ghostwire` and `/opt/ghostwire`
 2. copies itself to `/opt/ghostwire/GHOSTWIRE`
-3. creates `config.json` with defaults, if missing
+3. creates `config.json` with defaults and the admin password, if missing
 4. writes `/etc/sysctl.d/99-ghostwire.conf` (IP forwarding) and
    `/etc/modules-load.d/ghostwire.conf`, and loads the kernel module
 5. writes `/etc/systemd/system/ghostwire.service`
-6. sets the admin password (first install only)
-7. enables and starts the service, and checks that it stays up
+6. enables and starts the service, and checks that it stays up
 
 Running it again is safe: steps that are already done are skipped, and the
 questions offer the current settings, so Enter keeps them. If a changed
@@ -231,7 +230,10 @@ Clients pivpn switched off are imported switched off, with the note
 
 After the summary, install notes which peers are connected, stops pivpn's
 WireGuard (`systemctl disable --now wg-quick@wg0`), starts GHOSTWIRE on the
-same `wg0` and waits up to 30 s for those peers to come back. Devices that
+same `wg0` and waits up to 30 s for those peers to come back. pivpn's own NAT
+rules would keep working next to GHOSTWIRE's NAT setting, so install removes
+them and comments them out in `/etc/iptables/rules.v4`/`rules.v6` (or ufw's
+`before.rules`); `GHOSTWIRE uninstall` puts them back. Devices that
 send traffic reconnect after about 15 s; an idle device reconnects the next
 time it sends something. The wait only reports: Enter skips it, and so does
 `-no-wait` in scripts. If the service does not stay running, install puts
@@ -242,6 +244,7 @@ run next to pivpn otherwise. pivpn's files stay as they were. Manage peers in
 GHOSTWIRE from then on, delete `/etc/wireguard/configs` once everything works,
 and don't run `pivpn uninstall`, which removes WireGuard packages. To go back
 to pivpn: `GHOSTWIRE uninstall`, then `systemctl enable --now wg-quick@wg0`.
+While pivpn's WireGuard is switched on, install refuses to run.
 
 ## Commands (as root)
 

@@ -45,7 +45,7 @@ func readPivpn(root string) (*pivpnSetup, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &pivpnSetup{Dev: cmp.Or(vars["pivpnDEV"], "wg0")}
+	s := &pivpnSetup{Dev: pivpnIfName(vars)}
 	if checkIfName(s.Dev) != nil {
 		return nil, fmt.Errorf("pivpn: interface name %q is not usable", s.Dev)
 	}
@@ -242,6 +242,19 @@ func readSetupVars(path string) (map[string]string, error) {
 		out[strings.TrimSpace(k)] = v
 	}
 	return out, nil
+}
+
+// pivpnIfName is the WireGuard interface in pivpn's setupVars.
+func pivpnIfName(vars map[string]string) string { return cmp.Or(vars["pivpnDEV"], "wg0") }
+
+// pivpnDev returns pivpn's WireGuard interface under root, or "" when pivpn's
+// WireGuard is not installed.
+func pivpnDev(root string) string {
+	vars, err := readSetupVars(filepath.Join(root, pivpnSetupVars))
+	if err != nil {
+		return ""
+	}
+	return pivpnIfName(vars)
 }
 
 type wgClient struct {

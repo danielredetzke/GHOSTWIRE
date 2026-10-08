@@ -375,7 +375,7 @@ func restartAndVerify() error {
 
 // ---------- install ----------
 
-func cmdInstall(args []string) error {
+func cmdInstall(args []string) (err error) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	domain := fs.String("domain", "", "domain for the web interface; enables Let's Encrypt")
 	email := fs.String("email", "", "contact email for Let's Encrypt (optional)")
@@ -410,20 +410,23 @@ func cmdInstall(args []string) error {
 	interactive := !*yes && term.IsTerminal(int(os.Stdin.Fd()))
 
 	// pivpn: a new install takes over its WireGuard server, or stops, since
-	// both would run the same interface.
+	// both would run the same interface. An existing install stops while
+	// pivpn's WireGuard is switched on again.
 	var pv *pivpnSetup
+	var pivpnUnit string // pivpn's wg-quick unit, when it runs or starts at boot
+	pivpnIf := pivpnDev("/")
 	if !existing {
 		if pv, err = readPivpn("/"); err != nil {
 			return err
 		}
+	} else if pivpnIf != "" {
+		u := "wg-quick@" + pivpnIf
+		if shOut("systemctl", "is-enabled", u) == "enabled" || shOut("systemctl", "is-active", u) == "active" {
+			pivpnUnit = u
+		}
 	}
-	switch {
-	case *importPivpn && existing:
-		return fmt.Errorf("-import-pivpn works only on a new install, and %s exists", configFile)
-	case *importPivpn && pv == nil:
-		return fmt.Errorf("-import-pivpn: pivpn's WireGuard setup was not found (/%s)", pivpnSetupVars)
-	case pv != nil && !interactive && !*importPivpn:
-		return fmt.Errorf("pivpn runs WireGuard on %s here; add -import-pivpn to take it over, or remove pivpn first", pv.Dev)
+	if err := checkPivpn(existing, *importPivpn, interactive, pv, pivpnUnit); err != nil {
+		return err
 	}
 	if pv != nil {
 		pv.apply(cur)
@@ -444,8 +447,15 @@ func cmdInstall(args []string) error {
 		if plan, err = askInstall(os.Stdin, cur, existing, given, plan); err != nil {
 			return err
 		}
-	} else if n := plan.reissueCount(cur, existing); n > 0 {
-		fmt.Printf("Note: %d existing device(s) need a new config: the endpoint or port changes.\n", n)
+	} else {
+		if n := plan.reissueCount(cur, existing); n > 0 {
+			fmt.Printf("Note: %d existing device(s) need a new config: the endpoint or port changes.\n", n)
+		}
+		if !cur.passwordSet() {
+			if plan.passwordHash, err = stdinPassword(cur.Users[0].Username); err != nil {
+				return err
+			}
+		}
 	}
 
 	// User and folder
@@ -484,6 +494,20 @@ func cmdInstall(args []string) error {
 		}
 	}
 
+	// A takeover that fails before pivpn is stopped takes its config and
+	// unit back out, so the next install offers the takeover again.
+	var switched time.Time
+	if pv != nil {
+		defer func() {
+			if err != nil && switched.IsZero() {
+				_ = os.Remove(configFile)
+				if os.Remove(unitPath) == nil {
+					_ = sh("systemctl", "daemon-reload")
+				}
+			}
+		}()
+	}
+
 	// Config: created with defaults (server key, the chosen subnet) if
 	// missing, or with everything taken over from pivpn.
 	switch {
@@ -517,13 +541,6 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
-	if cfg := store.Get(); !cfg.passwordSet() {
-		fmt.Printf("\nChoose the password for the web interface (user %q, at least 12 characters).\n", cfg.Users[0].Username)
-		if err := setPassword(configFile, ""); err != nil {
-			return err
-		}
-	}
-
 	// Everything in the folder belongs to the service user.
 	if err := chownTree(installDir, uid, gid); err != nil {
 		return err
@@ -531,7 +548,6 @@ func cmdInstall(args []string) error {
 
 	// pivpn hands over its interface: note who is connected, then stop it.
 	var connected []string
-	var switched time.Time
 	if pv != nil {
 		connected = pivpnConnected(pv)
 		step("Peers connected to pivpn right now: %s", cmp.Or(strings.Join(connected, ", "), "none"))
@@ -540,6 +556,9 @@ func cmdInstall(args []string) error {
 			return err
 		}
 		switched = time.Now()
+	}
+	if pivpnIf != "" {
+		removePivpnNAT()
 	}
 
 	step("Starting %s", serviceName)
@@ -565,6 +584,47 @@ func cmdInstall(args []string) error {
 		fmt.Printf("Don't run \"pivpn uninstall\": it removes WireGuard packages and firewall rules.\n")
 	}
 	return nil
+}
+
+// checkPivpn decides whether install may go on with pivpn on the server. pv
+// is pivpn's setup, read on a new install only; pivpnUnit is pivpn's
+// wg-quick unit when an existing install finds it running or enabled.
+func checkPivpn(existing, importPivpn, interactive bool, pv *pivpnSetup, pivpnUnit string) error {
+	switch {
+	case existing && pivpnUnit != "":
+		return fmt.Errorf("pivpn's WireGuard (%[2]s) is switched on, and %[1]s would run the same interface. "+
+			"To keep %[1]s and its peers: systemctl disable --now %[2]s, then install again. "+
+			"To take pivpn over again instead: %[1]s uninstall -purge, then install -import-pivpn", appName, pivpnUnit)
+	case importPivpn && existing:
+		return fmt.Errorf("-import-pivpn works only on a new install, and %s exists", configFile)
+	case importPivpn && pv == nil:
+		return fmt.Errorf("-import-pivpn: pivpn's WireGuard setup was not found (/%s)", pivpnSetupVars)
+	case pv != nil && !interactive && !importPivpn:
+		return fmt.Errorf("pivpn runs WireGuard on %s here; add -import-pivpn to take it over, or remove pivpn first", pv.Dev)
+	}
+	return nil
+}
+
+// stdinPassword reads the admin password of an install without questions
+// from standard input (or the terminal with -y). It runs before anything is
+// changed.
+func stdinPassword(username string) (string, error) {
+	pw, err := readSecret(fmt.Sprintf("Password for %q (at least 12 characters): ", username))
+	if errors.Is(err, io.EOF) && pw != "" {
+		err = nil // the last line without a newline
+	}
+	if err != nil || pw == "" {
+		return "", fmt.Errorf("no admin password: pass it on standard input, e.g. echo \"$PASSWORD\" | %s install -y; nothing was changed", appName)
+	}
+	if err := validatePassword(pw); err != nil {
+		return "", fmt.Errorf("admin password: %w; nothing was changed", err)
+	}
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		if again, err := readSecret("Repeat password: "); err != nil || again != pw {
+			return "", errors.New("the passwords do not match; nothing was changed")
+		}
+	}
+	return hashPassword(pw)
 }
 
 // pivpnConnected names the peers with a handshake in the last 3 minutes.
@@ -695,6 +755,7 @@ func pivpnBack(pv *pivpnSetup, c *Config, cause error) error {
 		k.Close()
 	}
 	_ = os.Remove(configFile)
+	restorePivpnNAT()
 	step("Starting pivpn's WireGuard again (systemctl enable --now wg-quick@%s)", pv.Dev)
 	if err := sh("systemctl", "enable", "--now", "wg-quick@"+pv.Dev); err != nil {
 		return fmt.Errorf("install failed, and starting pivpn's WireGuard again failed too: %v (original error: %w)", err, cause)
@@ -883,6 +944,9 @@ func cmdUninstall(args []string) error {
 		}
 	}
 	_ = sh("systemctl", "daemon-reload")
+	if pivpnDev("/") != "" {
+		restorePivpnNAT()
+	}
 
 	if *purge {
 		step("Deleting %s and the user %s", installDir, serviceName)

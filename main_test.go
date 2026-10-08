@@ -1645,3 +1645,46 @@ func TestClassifyVisitor(t *testing.T) {
 		t.Error("fullTunnel")
 	}
 }
+
+// An empty DNS list ("no DNS") is kept through saving and reloading, and
+// differs from null (the server default). Empty AllowedIPs are refused.
+func TestPeerEmptyOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	store, err := openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *Config) error {
+		c.Server.IPv4 = "10.6.0.0/24"
+		c.Peers = []Peer{
+			{ID: "a", Name: "nodns", IPv4: "10.6.0.2", PublicKey: "k1", DNS: []string{}},
+			{ID: "b", Name: "default", IPv4: "10.6.0.3", PublicKey: "k2"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := store.Get()
+	if c.Peers[0].DNS == nil || len(c.Peers[0].DNS) != 0 {
+		t.Fatalf("dns [] became %#v", c.Peers[0].DNS)
+	}
+	if out := clientConfig(c, &c.Peers[0], ""); strings.Contains(out, "DNS") {
+		t.Errorf("no DNS wanted:\n%s", out)
+	}
+	if c.Peers[1].DNS != nil || !strings.Contains(clientConfig(c, &c.Peers[1], ""), "DNS = 9.9.9.9") {
+		t.Errorf("null should be the server default: %#v", c.Peers[1].DNS)
+	}
+
+	err = store.Update(func(c *Config) error { c.Peers[0].AllowedIPs = []string{}; return nil })
+	if err == nil || !strings.Contains(err.Error(), "AllowedIPs") {
+		t.Errorf("empty peer AllowedIPs should be refused: %v", err)
+	}
+	err = store.Update(func(c *Config) error { c.Server.ClientDefaults.AllowedIPs = []string{}; return nil })
+	if err == nil || !strings.Contains(err.Error(), "AllowedIPs") {
+		t.Errorf("empty default AllowedIPs should be refused: %v", err)
+	}
+}

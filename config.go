@@ -181,10 +181,12 @@ type Peer struct {
 	// IPv6 is set only for a peer imported from pivpn, which numbers IPv6
 	// differently: its device keeps the address until the config is issued
 	// here. Empty means the address mapped from IPv4 (see mapIPv6).
-	IPv6       string   `json:"ipv6,omitempty"`
-	DNS        []string `json:"dns,omitempty"`        // nil = server default
-	AllowedIPs []string `json:"allowedIPs,omitempty"` // nil = server default
-	Keepalive  *int     `json:"keepalive,omitempty"`  // nil = server default
+	IPv6 string `json:"ipv6,omitempty"`
+	// DNS and AllowedIPs: null is the server default. DNS [] means no DNS;
+	// AllowedIPs [] is refused. No omitempty: it would save [] as null.
+	DNS        []string `json:"dns"`
+	AllowedIPs []string `json:"allowedIPs"`
+	Keepalive  *int     `json:"keepalive,omitempty"` // nil = server default
 	// LatencyCheck says when the server pings the peer through the tunnel:
 	// "" (off), "active" (while the device sends traffic) or "always".
 	LatencyCheck string     `json:"latencyCheck,omitempty"`
@@ -357,6 +359,9 @@ func validateHostList(list []string, field string, wantCIDR bool) error {
 	return nil
 }
 
+// errNoAllowedIPs: a config with an empty AllowedIPs line routes nothing.
+var errNoAllowedIPs = errors.New("AllowedIPs: at least one network is needed")
+
 // validate checks the whole config for consistency. It runs before every save.
 func (c *Config) validate() error {
 	s := &c.Server
@@ -396,6 +401,9 @@ func (c *Config) validate() error {
 	}
 	if err := validateHostList(s.ClientDefaults.AllowedIPs, "AllowedIPs", true); err != nil {
 		return err
+	}
+	if len(s.ClientDefaults.AllowedIPs) == 0 {
+		return errNoAllowedIPs
 	}
 	if s.ClientDefaults.Keepalive < 0 || s.ClientDefaults.Keepalive > 3600 {
 		return errors.New("keepalive must be 0–3600 seconds")
@@ -511,6 +519,9 @@ func (c *Config) validate() error {
 		}
 		if err := validateHostList(p.AllowedIPs, "AllowedIPs", true); err != nil {
 			return fmt.Errorf("peer %q: %w", p.Name, err)
+		}
+		if p.AllowedIPs != nil && len(p.AllowedIPs) == 0 {
+			return fmt.Errorf("peer %q: %w", p.Name, errNoAllowedIPs)
 		}
 		if p.Keepalive != nil && (*p.Keepalive < 0 || *p.Keepalive > 3600) {
 			return fmt.Errorf("peer %q: keepalive must be 0–3600 seconds", p.Name)
