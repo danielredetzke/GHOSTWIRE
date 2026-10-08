@@ -591,8 +591,10 @@
     refreshSide();
   }
 
-  // drawUpdateHint shows a newer release next to the version in the sidebar
-  // and as a dot on Settings.
+  // drawUpdateHint shows the update state next to the version in the
+  // sidebar: up to date, or the newer release (also as a dot on Settings).
+  // Without a working check (switched off, not run yet, failed) it shows
+  // nothing.
   function drawUpdateHint() {
     if (!verRow) return;
     const v = me.updateAvailable;
@@ -601,7 +603,8 @@
     fill(verRow, /^v\d+\.\d+\.\d+$/.test(cur)
       ? h('a', { class: 'ver', href: 'https://github.com/danielredetzke/GHOSTWIRE/releases/tag/' + cur, target: '_blank', rel: 'noopener', title: 'Release notes for ' + cur }, cur, h('span', { class: 'sr' }, ' release notes (opens in a new tab)'))
       : h('span', { class: 'ver' }, cur),
-      v ? h('a', { class: 'upd', href: '#/settings#updates' }, v + ' available') : null);
+      v ? h('a', { class: 'upd', href: '#/settings#updates' }, v + ' available')
+        : me.upToDate ? h('a', { class: 'upd ok', href: '#/settings#updates' }, 'Up to date') : null);
     const set = navLinks['#/settings'];
     set.querySelectorAll('.pip, .sr').forEach((e) => e.remove());
     if (v) set.append(h('span', { class: 'pip', title: 'Update available' }), h('span', { class: 'sr' }, ', update available'));
@@ -2120,6 +2123,7 @@
     const setStatus = (next) => {
       st = next;
       me.updateAvailable = st.enabled && st.available ? st.latest.version : undefined;
+      me.upToDate = st.enabled && !!st.latest && !st.error && !st.available;
       drawUpdateHint();
       draw();
     };

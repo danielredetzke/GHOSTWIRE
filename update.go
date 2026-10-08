@@ -155,6 +155,13 @@ func (u *Updater) Available() string {
 	return ""
 }
 
+// UpToDate reports whether the check is on and its last attempt found no
+// newer release. Without a working check the state is unknown.
+func (u *Updater) UpToDate() bool {
+	st := u.Status()
+	return st.Enabled && st.Latest != nil && st.Error == "" && !st.Available
+}
+
 // releaseArch names this platform the way the release files do, or "" when
 // no file is built for it.
 func releaseArch() string {

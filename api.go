@@ -273,6 +273,8 @@ func (a *App) me(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := a.updates.Available(); v != "" {
 		out["updateAvailable"] = v
+	} else if a.updates.UpToDate() {
+		out["upToDate"] = true
 	}
 	if _, u := a.store.Get().userByID(p.UserID); u != nil {
 		out["username"], out["note"], out["created"] = u.Username, u.Note, u.Created

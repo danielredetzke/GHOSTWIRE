@@ -95,13 +95,23 @@ func TestUpdater(t *testing.T) {
 	if st := u.Status(); st.Error != "no route to host" || st.Latest == nil {
 		t.Errorf("after a failed check: %+v", st)
 	}
+	if u.UpToDate() {
+		t.Error("up to date after a failed check")
+	}
+
+	// Nothing newer: up to date.
+	u.fetch = func(context.Context, string) (*Release, error) { return &Release{Version: "v0.3.2"}, nil }
+	u.Check(context.Background())
+	if !u.UpToDate() || u.Available() != "" {
+		t.Errorf("same version: up to date %v, available %q", u.UpToDate(), u.Available())
+	}
 
 	// Switching off hides it.
 	off := false
 	u.fetch = func(context.Context, string) (*Release, error) { return &Release{Version: "v0.4.0"}, nil }
 	u.Check(context.Background())
 	u.Set(UpdatesConfig{Check: &off})
-	if u.Available() != "" || u.Status().Enabled {
-		t.Error("still reports an update with the check off")
+	if u.Available() != "" || u.UpToDate() || u.Status().Enabled {
+		t.Error("still reports an update state with the check off")
 	}
 }

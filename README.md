@@ -356,7 +356,8 @@ link, the peer's current keys keep working until the link is opened.
 platform. `PATCH /settings` `{"updates": {"check": false}}` switches the
 daily check off;
 `POST /updates/check` checks now. `GET /auth/me` has `updateAvailable` with
-the newer version while there is one.
+the newer version while there is one, and `upToDate: true` when the last check
+found nothing newer.
 
 Traffic is reported from the peer's point of view: `down` is what the peer
 downloaded, `up` is what it uploaded.
