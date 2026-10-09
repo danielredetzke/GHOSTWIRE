@@ -1473,7 +1473,7 @@
       });
       tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
         h('td', null, peerLink(p), p.note ? h('div', { class: 'note' }, p.note) : null),
-        h('td', { class: 'mono' }, p.ipv4, p.ipv6 ? h('div', { class: 'note' }, p.ipv6) : null),
+        h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
           p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null),
