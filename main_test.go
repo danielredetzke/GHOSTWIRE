@@ -861,6 +861,56 @@ func TestInstallQuestions(t *testing.T) {
 	}
 }
 
+// TestInstallProxy installs behind a reverse proxy with -proxy.
+func TestInstallProxy(t *testing.T) {
+	for in, want := range map[string]string{"8080": "127.0.0.1:8080", "127.0.0.1:9000": "127.0.0.1:9000", "[::1]:8080": "[::1]:8080"} {
+		if got, err := proxyListen(in); err != nil || got != want {
+			t.Errorf("proxyListen(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"0.0.0.0:8080", ":8080", "192.0.2.1:8080", "localhost:8080", "127.0.0.1:0", "127.0.0.1", "abc"} {
+		if _, err := proxyListen(bad); err == nil {
+			t.Errorf("proxyListen(%q) should fail", bad)
+		}
+	}
+	if (installPlan{proxy: "127.0.0.1:8080", domain: "vpn.example.net"}).check() == nil {
+		t.Error("-proxy with -domain should be rejected")
+	}
+
+	// An install that had Let's Encrypt moves behind the proxy: no web
+	// questions, only endpoint, port and the confirmation.
+	hash, _ := hashPassword("a long test password")
+	cur := testConfig(t)
+	cur.Web.TLS.Mode, cur.Web.TLS.Domain, cur.Web.HTTPListen = "acme", "vpn.example.net", ":80"
+	cur.Users[0].PasswordHash = hash
+	p, err := askInstall(strings.NewReader("\n\ny\n"), cur, true, map[string]bool{"proxy": true}, installPlan{proxy: "127.0.0.1:8080"})
+	if err != nil || !p.changes() {
+		t.Fatalf("proxy install: %+v %v", p, err)
+	}
+	c := cur.clone()
+	p.apply(c)
+	if c.Web.TLS.Mode != "off" || c.Web.Listen != "127.0.0.1:8080" || c.Web.HTTPListen != "" || c.Web.TLS.Domain != "" || c.Server.Endpoint != "vpn.example.net" {
+		t.Fatalf("proxy not applied: %+v", c.Web)
+	}
+	if err := c.validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running install again keeps the proxy without asking for a domain.
+	p2, err := askInstall(strings.NewReader("\n\ny\n"), c, true, map[string]bool{}, installPlan{})
+	if err != nil || p2.changes() {
+		t.Fatalf("re-run should keep the proxy: %+v %v", p2, err)
+	}
+
+	// -domain brings it out from behind the proxy, on port 443 again.
+	d := c.clone()
+	installPlan{domain: "vpn.example.net"}.apply(d)
+	d.applyDefaults()
+	if d.Web.TLS.Mode != "acme" || d.Web.Listen != ":443" || d.Web.HTTPListen != ":80" {
+		t.Fatalf("-domain should leave the proxy: %+v", d.Web)
+	}
+}
+
 func TestLatency(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openStore(filepath.Join(dir, "config.json"))

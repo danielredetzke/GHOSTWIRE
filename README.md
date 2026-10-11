@@ -202,6 +202,7 @@ is already installed needs no password. All flags:
 |---|---|---|
 | `-domain` | Domain for the web interface; gets a Let's Encrypt certificate | none: self-signed certificate |
 | `-email` | Contact email for Let's Encrypt | none |
+| `-proxy` | Runs behind a reverse proxy: plain HTTP on this loopback address, e.g. `127.0.0.1:8080` (a bare port means `127.0.0.1`); see [Behind a reverse proxy](#behind-a-reverse-proxy). Not with `-domain` or `-email` | off |
 | `-endpoint` | Host or IP devices connect to | the domain, else the server's detected public IP; when already installed, the current one |
 | `-port` | UDP port WireGuard listens on | 51820, or the current port when already installed |
 | `-import-pivpn` | Takes over a pivpn WireGuard server and its clients; see [Moving from pivpn](#moving-from-pivpn) | off |
@@ -228,6 +229,37 @@ how many.
 Then open `https://vpn.example.net` and sign in as `admin`. Add more users
 under Settings → Users. Root is needed only for the commands below, never for
 the running service.
+
+### Behind a reverse proxy
+
+If nginx, Caddy or another web server already uses port 443, let it hold the
+certificate and pass the web interface on to GHOSTWIRE:
+
+```sh
+curl -fsSL https://ghostwi.re/install | sh -s -- -proxy 127.0.0.1:8080 -endpoint vpn.example.net
+```
+
+GHOSTWIRE then serves plain HTTP on that address only, asks no questions
+about the domain and listens on no public web port; WireGuard stays on UDP
+51820. The address must be a loopback address, so the plain HTTP is never
+reachable from the network.
+`-endpoint` is the name devices connect to; without it, install uses the
+server's public IP. Running install again keeps the proxy setup; `-domain`
+switches back to Let's Encrypt on port 443.
+
+The proxy must keep the `Host` header (passkeys check it) and set
+`X-Forwarded-For`, which GHOSTWIRE trusts only from loopback, for sign-in
+lockouts, the log and "You are protected". nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Caddy does both by default: `reverse_proxy 127.0.0.1:8080`.
 
 ## Moving from pivpn
 

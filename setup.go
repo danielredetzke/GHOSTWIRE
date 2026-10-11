@@ -381,6 +381,7 @@ func cmdInstall(args []string) (err error) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	domain := fs.String("domain", "", "domain for the web interface; enables Let's Encrypt")
 	email := fs.String("email", "", "contact email for Let's Encrypt (optional)")
+	proxy := fs.String("proxy", "", "run behind a reverse proxy: plain HTTP on this loopback address, e.g. 127.0.0.1:8080 (no certificate)")
 	endpoint := fs.String("endpoint", "", "host or IP devices connect to (default: the domain, else the detected public IP)")
 	port := fs.Int("port", 0, "UDP port WireGuard listens on (default: 51820, or the current port when already installed)")
 	yes := fs.Bool("y", false, "do not ask; use the flags and defaults")
@@ -406,6 +407,11 @@ func cmdInstall(args []string) (err error) {
 		return err
 	}
 	plan := installPlan{domain: *domain, email: *email, endpoint: *endpoint, port: *port}
+	if *proxy != "" {
+		if plan.proxy, err = proxyListen(*proxy); err != nil {
+			return err
+		}
+	}
 	if err := plan.check(); err != nil {
 		return err
 	}
@@ -802,19 +808,21 @@ func printWhereToGo(c *Config) {
 	if host == "" {
 		host = "<server address>"
 	}
-	scheme, port := "https", c.Web.Listen
-	if c.Web.TLS.Mode == "off" {
-		scheme = "http"
-	}
-	if _, p, _ := strings.Cut(port, ":"); p != "" && p != "443" && p != "80" {
+	if _, p, _ := strings.Cut(c.Web.Listen, ":"); p != "" && p != "443" && p != "80" {
 		host += ":" + p
 	}
-	fmt.Printf("\nDone. %s %s is running.\n  Web interface: %s://%s/\n", appName, version, scheme, host)
+	web := "https://" + host + "/"
+	if c.Web.TLS.Mode == "off" {
+		web = "http://" + c.Web.Listen + "/ for your reverse proxy"
+	}
+	fmt.Printf("\nDone. %s %s is running.\n  Web interface: %s\n", appName, version, web)
 	switch c.Web.TLS.Mode {
 	case "acme":
 		fmt.Println("  The Let's Encrypt certificate is requested on the first visit; ports 443 (and 80) must be reachable.")
 	case "selfsigned":
 		fmt.Println("  It uses a self-signed certificate, so the browser shows a warning the first time.")
+	case "off":
+		fmt.Println("  The proxy must pass the Host header and set X-Forwarded-For; see the README.")
 	}
 	fmt.Printf("  WireGuard: UDP %d · Log: %s/%s.jsonl · Status: systemctl status %s\n", c.Server.ListenPort, installDir, appName, serviceName)
 }

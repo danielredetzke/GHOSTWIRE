@@ -18,6 +18,7 @@ import (
 type installPlan struct {
 	domain, email, endpoint string
 	port                    int
+	proxy                   string      // listen address for a reverse proxy: plain HTTP, no certificate
 	noDomain                bool        // turn an existing domain off (self-signed certificate)
 	noEmail                 bool        // remove an existing Let's Encrypt email
 	passwordHash            string      // asked in the terminal; empty: asked later
@@ -48,6 +49,26 @@ func checkEndpoint(h string) error {
 	return fmt.Errorf("%q is not a host name or IP address (without port)", h)
 }
 
+// proxyListen checks the -proxy address and fills in the host of a bare
+// port. It must be on loopback: plain HTTP must not be reachable from the
+// network, and X-Forwarded-For is trusted only from loopback.
+func proxyListen(addr string) (string, error) {
+	if _, err := strconv.Atoi(addr); err == nil {
+		addr = "127.0.0.1:" + addr
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("%q is not an address like 127.0.0.1:8080", addr)
+	}
+	if n, err := strconv.Atoi(port); err != nil || checkPort(n) != nil {
+		return "", fmt.Errorf("%q: the port must be 1–65535", addr)
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("%q: the reverse proxy must reach GHOSTWIRE on a loopback address such as 127.0.0.1 or [::1]", addr)
+	}
+	return addr, nil
+}
+
 func checkPort(p int) error {
 	if p < 1 || p > 65535 {
 		return errors.New("the port must be 1–65535")
@@ -57,6 +78,9 @@ func checkPort(p int) error {
 
 // check validates the flags before anything is changed.
 func (p installPlan) check() error {
+	if p.proxy != "" && (p.domain != "" || p.email != "") {
+		return errors.New("-proxy cannot be combined with -domain or -email: the reverse proxy holds the certificate. Give the address devices connect to with -endpoint")
+	}
 	if p.domain != "" {
 		if err := checkDomain(p.domain); err != nil {
 			return err
@@ -79,7 +103,7 @@ func (p installPlan) check() error {
 }
 
 func (p installPlan) changes() bool {
-	return p.domain != "" || p.email != "" || p.endpoint != "" || p.port != 0 || p.noDomain || p.noEmail || p.passwordHash != ""
+	return p.domain != "" || p.email != "" || p.proxy != "" || p.endpoint != "" || p.port != 0 || p.noDomain || p.noEmail || p.passwordHash != ""
 }
 
 // errPivpnDeclined ends an install whose admin keeps pivpn: both would use
@@ -93,7 +117,14 @@ func (p installPlan) apply(c *Config) {
 		}
 		c.Web.TLS.Domain, c.Web.TLS.Email = "", ""
 	}
+	if p.proxy != "" {
+		c.Web.TLS.Mode, c.Web.TLS.Domain, c.Web.TLS.Email = "off", "", ""
+		c.Web.Listen, c.Web.HTTPListen = p.proxy, ""
+	}
 	if p.domain != "" {
+		if c.Web.TLS.Mode == "off" {
+			c.Web.Listen = ":443" // out from behind the reverse proxy
+		}
 		c.Web.TLS.Mode, c.Web.TLS.Domain = "acme", p.domain
 		if c.Server.Endpoint == "" {
 			c.Server.Endpoint = p.domain
@@ -221,52 +252,62 @@ func askInstall(in io.Reader, cur *Config, existing bool, given map[string]bool,
 		curDomain = cur.Web.TLS.Domain
 	}
 	domain := p.domain
-	if !given["domain"] {
-		q := "Domain name for the web interface (empty: no domain, self-signed certificate)"
-		if curDomain != "" {
-			q = "Domain name for the web interface (none: no domain, self-signed certificate)"
-		}
-		v, err := pr.ask(q, curDomain, func(v string) error {
-			if v == "" || v == "none" {
-				return nil
-			}
-			return checkDomain(v)
-		})
-		if err != nil {
-			return p, err
-		}
-		switch {
-		case v == "none" || v == "":
-			p.noDomain, domain = curDomain != "", ""
-		case v != curDomain:
-			p.domain, domain = v, v
-		default:
-			domain = v
-		}
+	// Behind a reverse proxy the proxy has the domain and certificate, so
+	// there is nothing to ask. A -domain brings an install out from behind it.
+	proxy := p.proxy
+	if proxy == "" && p.domain == "" && cur.Web.TLS.Mode == "off" {
+		proxy = cur.Web.Listen
 	}
-	if domain == "" && cur.Web.TLS.Mode == "acme" && !p.noDomain {
-		domain = curDomain
-	}
-	if domain != "" && !given["email"] {
-		def := cur.Web.TLS.Email
-		q := "Email for Let's Encrypt expiry warnings (optional)"
-		if def != "" {
-			q = "Email for Let's Encrypt expiry warnings (none: no email)"
-		}
-		v, err := pr.ask(q, def, func(v string) error {
-			if v == "" || v == "none" {
-				return nil
+	if proxy != "" {
+		fmt.Printf("  Behind a reverse proxy: plain HTTP on %s\n", proxy)
+	} else {
+		if !given["domain"] {
+			q := "Domain name for the web interface (empty: no domain, self-signed certificate)"
+			if curDomain != "" {
+				q = "Domain name for the web interface (none: no domain, self-signed certificate)"
 			}
-			return checkEmail(v)
-		})
-		if err != nil {
-			return p, err
+			v, err := pr.ask(q, curDomain, func(v string) error {
+				if v == "" || v == "none" {
+					return nil
+				}
+				return checkDomain(v)
+			})
+			if err != nil {
+				return p, err
+			}
+			switch {
+			case v == "none" || v == "":
+				p.noDomain, domain = curDomain != "", ""
+			case v != curDomain:
+				p.domain, domain = v, v
+			default:
+				domain = v
+			}
 		}
-		switch {
-		case v == "none":
-			p.noEmail = true
-		case v != cur.Web.TLS.Email:
-			p.email = v
+		if domain == "" && cur.Web.TLS.Mode == "acme" && !p.noDomain {
+			domain = curDomain
+		}
+		if domain != "" && !given["email"] {
+			def := cur.Web.TLS.Email
+			q := "Email for Let's Encrypt expiry warnings (optional)"
+			if def != "" {
+				q = "Email for Let's Encrypt expiry warnings (none: no email)"
+			}
+			v, err := pr.ask(q, def, func(v string) error {
+				if v == "" || v == "none" {
+					return nil
+				}
+				return checkEmail(v)
+			})
+			if err != nil {
+				return p, err
+			}
+			switch {
+			case v == "none":
+				p.noEmail = true
+			case v != cur.Web.TLS.Email:
+				p.email = v
+			}
 		}
 	}
 
@@ -383,7 +424,7 @@ func printInstallSummary(cur *Config, existing bool, p installPlan) {
 	case "files":
 		web += " (your certificate files)"
 	case "off":
-		web = "http://" + host + "/ (plain HTTP behind a reverse proxy)"
+		web = "http://" + next.Web.Listen + "/ (plain HTTP for your reverse proxy)"
 	}
 
 	ep := endpointString(next) + "/udp"
