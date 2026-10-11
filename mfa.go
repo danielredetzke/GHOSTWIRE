@@ -513,13 +513,23 @@ func (a *App) loginKeyFinish(w http.ResponseWriter, r *http.Request) {
 	cred, err := wa.FinishLogin(waUser{u}, *data, r)
 	if err != nil {
 		a.auth.ticketFailed(id, ip)
-		slog.Warn("login failed", "user", u.Username, "remote", ip, "reason", "passkey: "+err.Error())
+		slog.Warn("login failed", "user", u.Username, "remote", ip, "reason", "passkey: "+waReason(err))
 		a.signInFailed(w, errors.New("the passkey was not accepted"))
 		return
 	}
 	a.keyUsed(u.ID, cred)
 	a.auth.dropTicket(id)
 	a.signedIn(w, r, u, "passkey")
+}
+
+// waReason gives the library's whole explanation of a failed passkey
+// check, for the log.
+func waReason(err error) string {
+	var pe *protocol.Error
+	if errors.As(err, &pe) && pe.DevInfo != "" {
+		return pe.Details + ": " + pe.DevInfo
+	}
+	return err.Error()
 }
 
 // keyUsed stores the key's new signature counter and when it was used.
@@ -639,8 +649,13 @@ func (a *App) loginPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 		a.auth.mu.Lock()
 		a.auth.failLocked(ip)
 		a.auth.mu.Unlock()
-		slog.Warn("login failed", "remote", ip, "reason", "passkey not accepted")
-		a.signInFailed(w, errors.New("this passkey is not known here"))
+		if found == nil {
+			slog.Warn("login failed", "remote", ip, "reason", "unknown passkey")
+			a.signInFailed(w, errors.New("this passkey is not known here"))
+			return
+		}
+		slog.Warn("login failed", "user", found.Username, "remote", ip, "reason", "passkey: "+waReason(err))
+		a.signInFailed(w, errors.New("the passkey was not accepted"))
 		return
 	}
 	a.keyUsed(found.ID, cred)
