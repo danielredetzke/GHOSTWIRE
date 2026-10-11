@@ -199,8 +199,11 @@ func (a *App) webAuthn(r *http.Request) (*webauthn.WebAuthn, error) {
 	if r.TLS == nil && hostOnly(r.Host) == "localhost" {
 		scheme = "http"
 	}
+	// Some browsers return extension outputs nobody asked for, such as
+	// appid on a sign-in; they are ignored, not refused.
 	return webauthn.New(&webauthn.Config{
 		RPID: hostOnly(r.Host), RPDisplayName: appName, RPOrigins: []string{scheme + "://" + r.Host},
+		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyIgnore,
 	})
 }
 
