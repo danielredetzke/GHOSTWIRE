@@ -232,24 +232,18 @@ the running service.
 
 ### Behind a reverse proxy
 
-If nginx, Caddy or another web server already uses port 443, let it hold the
-certificate and pass the web interface on to GHOSTWIRE:
+If nginx, Caddy or another web server already uses port 443, it can hold the
+certificate and pass the web interface on to GHOSTWIRE. Install with
+`-proxy 127.0.0.1:8080` (any free port) and give the name devices connect to
+with `-endpoint`; without it, install uses the server's public IP. Install then
+asks nothing about a domain, and GHOSTWIRE serves plain HTTP on that address
+only. It must be a loopback address, so the plain HTTP is never reachable from
+the network. WireGuard stays on UDP 51820. Running install again keeps this
+setup; `-domain` switches back to Let's Encrypt on port 443.
 
-```sh
-curl -fsSL https://ghostwi.re/install | sh -s -- -proxy 127.0.0.1:8080 -endpoint vpn.example.net
-```
-
-GHOSTWIRE then serves plain HTTP on that address only, asks no questions
-about the domain and listens on no public web port; WireGuard stays on UDP
-51820. The address must be a loopback address, so the plain HTTP is never
-reachable from the network.
-`-endpoint` is the name devices connect to; without it, install uses the
-server's public IP. Running install again keeps the proxy setup; `-domain`
-switches back to Let's Encrypt on port 443.
-
-The proxy must keep the `Host` header (passkeys check it) and set
-`X-Forwarded-For`, which GHOSTWIRE trusts only from loopback, for sign-in
-lockouts, the log and "You are protected". nginx:
+Point the proxy at that address. It must keep the `Host` header, which passkeys
+check, and set `X-Forwarded-For`, which GHOSTWIRE trusts only from loopback and
+uses for sign-in lockouts, the log and "You are protected". In nginx:
 
 ```nginx
 location / {
