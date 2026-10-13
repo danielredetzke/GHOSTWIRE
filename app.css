@@ -168,6 +168,8 @@ td { padding: 12px; border-bottom: 1px solid var(--line-2); vertical-align: midd
 tr:last-child td { border-bottom: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td .note { font-size: 12px; color: var(--ink-3); }
+/* On its own line, so it never widens the name column. */
+td .mtag { margin: 4px 0 0; }
 a.pname { color: var(--ink); font-weight: 600; text-decoration: none; }
 a.pname:hover { color: var(--link); }
 .empty { padding: 24px 12px; margin: 0; text-align: center; color: var(--ink-3); }

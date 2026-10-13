@@ -1477,7 +1477,7 @@
         return hit && keep;
       });
       tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
-        h('td', null, peerLink(p), p.manage ? h('span', { class: 'tag plain', title: 'Can open the web interface while Stealth is on' }, 'Management') : null, p.note ? h('div', { class: 'note' }, p.note) : null),
+        h('td', null, peerLink(p), p.manage ? h('div', null, h('span', { class: 'tag plain mtag', title: 'Can open the web interface while Stealth is on' }, 'Management')) : null, p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
