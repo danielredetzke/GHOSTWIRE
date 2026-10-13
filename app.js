@@ -305,6 +305,41 @@
     });
   }
 
+  // A switch acts the moment it is flipped. Checkboxes stay for forms,
+  // whose changes wait for their Save button.
+  function switchRow(input, title, hint) {
+    input.classList.add('switch');
+    input.setAttribute('role', 'switch');
+    return h('label', { class: 'toggle' }, h('span', null, title, hint ? [h('br'), h('span', { class: 'hint' }, hint)] : null), input);
+  }
+
+  // formState keeps a form's Save button off until something changes and
+  // shows "Unsaved changes" (note) next to it. attach() it once the form is
+  // in the page. Leaving the page with unsaved changes asks first.
+  const unsaved = new Set();
+  function formState(btn) {
+    const note = h('span', { class: 'unsaved', hidden: true }, 'Unsaved changes');
+    let form, base;
+    const state = () => [...form.querySelectorAll('input, select, textarea')].map((el) => (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.value).join('\u0000');
+    const update = () => {
+      const dirty = state() !== base;
+      btn.disabled = !dirty;
+      note.hidden = !dirty;
+      if (dirty) unsaved.add(form); else unsaved.delete(form);
+    };
+    btn.disabled = true;
+    return {
+      note,
+      attach() {
+        form = btn.form;
+        base = state();
+        form.addEventListener('input', update);
+        form.addEventListener('change', update);
+      },
+      saved() { base = state(); update(); },
+    };
+  }
+
   function download(name, text, type = 'text/plain') {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = h('a', { href: url, download: name });
@@ -648,6 +683,7 @@
   async function render() {
     cleanups.forEach((f) => f());
     cleanups = [];
+    unsaved.clear();
     if (!me) {
       try { me = await api('GET', '/auth/me'); } catch { showLogin(); return; }
     }
@@ -673,7 +709,20 @@
     }
   }
 
-  window.addEventListener('hashchange', render);
+  let shownHash = location.hash;
+  window.addEventListener('hashchange', async () => {
+    if (unsaved.size) {
+      const target = location.hash;
+      history.replaceState(null, '', shownHash || '#/');
+      if (!await confirmDialog({ title: 'Leave without saving?', text: 'Your changes on this page are not saved yet.', ok: 'Leave', danger: true })) return;
+      unsaved.clear();
+      location.hash = target;
+      return;
+    }
+    shownHash = location.hash;
+    render();
+  });
+  window.addEventListener('beforeunload', (e) => { if (unsaved.size) e.preventDefault(); });
 
   // ---------- login ----------
 
@@ -2191,10 +2240,8 @@
           h('div', null, h('button', { type: 'button', class: 'btn small', onClick: () => copy(cmds) }, 'Copy commands'))) : null,
         st.available && !st.file ? h('p', null, 'No release file is built for this platform. ', ext(rel.url, 'See the release')) : null,
         h('div', { class: 'uprow' },
-          h('label', { class: 'check' },
-            h('input', { type: 'checkbox', checked: st.enabled, onChange: (e) => save({ check: e.target.checked }) }),
-            h('span', null, 'Check for updates once a day', h('br'),
-              h('span', { class: 'hint' }, 'Asks github.com for the latest release. Nothing about this server is sent.'))),
+          switchRow(h('input', { type: 'checkbox', checked: st.enabled, onChange: (e) => save({ check: e.target.checked }) }),
+            'Check for updates once a day', 'Asks github.com for the latest release. Nothing about this server is sent.'),
           st.enabled ? h('button', { type: 'button', class: 'btn small', onClick: (e) => checkNow(e.currentTarget) }, 'Check now') : null));
     }
     draw();
@@ -2439,11 +2486,14 @@
     const syncMode = () => { web.tls.mode = modeSel.value; fAcme.hidden = modeSel.value !== 'acme'; fFiles.hidden = modeSel.value !== 'files'; };
     modeSel.addEventListener('change', syncMode);
     syncMode();
+    const webSave = h('button', { type: 'submit', class: 'btn primary' }, 'Save');
+    const webState = formState(webSave);
     const saveWeb = async (e) => {
       e.preventDefault();
       webErr.textContent = '';
       try {
         const res = await api('PATCH', '/settings', { web });
+        webState.saved();
         if (res.restartRequired) {
           webRestart.replaceChildren(h('div', { class: 'notice' }, 'Saved. The web interface uses the new settings after a restart.',
             h('button', { type: 'button', class: 'btn small', onClick: restartNow }, 'Restart now')));
@@ -2539,15 +2589,22 @@
         applied(res, on ? 'Stealth on' : 'Stealth off');
       } catch (x) { e.target.checked = !on; toast(x.message, true); }
     } });
-    const trustedInput = h('input', { id: 'stl-tr', class: 'mono', value: s.stealth.trusted.join(', '), placeholder: 'none', onChange: async (e) => {
-      const list = e.target.value.split(/[\s,]+/).filter(Boolean);
+    const trustedInput = h('input', { id: 'stl-tr', class: 'mono', value: s.stealth.trusted.join(', '), placeholder: 'none' });
+    const trustedSave = h('button', { type: 'submit', class: 'btn' }, 'Save');
+    const trustedState = formState(trustedSave);
+    const trustedErr = h('p', { class: 'err-text', role: 'alert' });
+    const saveTrusted = async (e) => {
+      e.preventDefault();
+      trustedErr.textContent = '';
+      const list = trustedInput.value.split(/[\s,]+/).filter(Boolean);
       try {
         await api('PATCH', '/settings', { stealth: { ...s.stealth, trusted: list } });
         s.stealth.trusted = list;
-        e.target.value = list.join(', ');
+        trustedInput.value = list.join(', ');
+        trustedState.saved();
         toast('Trusted networks saved');
-      } catch (x) { e.target.value = s.stealth.trusted.join(', '); toast(x.message, true); }
-    } });
+      } catch (x) { trustedErr.textContent = x.message; }
+    };
 
     // DNS for this service's own lookups (not the peers')
     const dnsField = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { htmlFor: id }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
@@ -2578,10 +2635,12 @@
         dnsResult.replaceChildren(h('p', { class: 'dnsres' }, h('span', { class: 'dot ok' }), r.name + ' → ' + r.answer + ' in ' + r.ms + ' ms, answered by ' + r.server));
       } catch (x) { dnsResult.replaceChildren(); dnsErr.textContent = x.message; }
     };
+    const dnsSave = h('button', { type: 'submit', class: 'btn primary' }, 'Save');
+    const dnsState = formState(dnsSave);
     const saveDNS = async (e) => {
       e.preventDefault();
       dnsErr.textContent = '';
-      try { await api('PATCH', '/settings', { dns: dnsBody() }); toast('DNS saved'); } catch (x) { dnsErr.textContent = x.message; }
+      try { await api('PATCH', '/settings', { dns: dnsBody() }); dnsState.saved(); toast('DNS saved'); } catch (x) { dnsErr.textContent = x.message; }
     };
 
     // data retention
@@ -2603,6 +2662,8 @@
     logFiles.addEventListener('input', drawDiskHint);
     drawDiskHint();
     const retErr = h('p', { class: 'err-text', role: 'alert' });
+    const retSave = h('button', { type: 'submit', class: 'btn primary' }, 'Save');
+    const retState = formState(retSave);
     const saveRetention = async (e) => {
       e.preventDefault();
       retErr.textContent = '';
@@ -2679,27 +2740,26 @@
           userBody))),
 
       h('section', { class: 'card', 'aria-labelledby': 'sgn' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'sgn' }, 'Sign-in'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'sgn' }, 'Sign-in')),
         h('p', { class: 'lead' }, 'Everyone sets up two-step sign-in under My account: an authenticator app or passkeys, including on a YubiKey.'),
-        h('label', { class: 'check' }, requireBox, h('span', null, 'Require two-step sign-in for everyone', h('br'),
-          h('span', { class: 'hint' }, 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.'))),
+        switchRow(requireBox, 'Require two-step sign-in for everyone', 'Users without it are asked to set it up right after their password. To help someone who lost their phone or key, use Edit → Reset two-step sign-in.'),
         h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'st' }, 'Stay signed in for'), sessSel, h('span', { class: 'hint' }, 'Applies to new sign-ins')),
           h('div', { class: 'field' }), h('div', { class: 'field' }))),
 
       h('section', { class: 'card', id: 'stealth', 'aria-labelledby': 'stl' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'stl' }, 'Stealth'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'stl' }, 'Stealth')),
         h('p', { class: 'lead' }, 'Hides the web interface and the API from everyone except management devices, which reach it through the VPN. Everyone else gets no page and no certificate.'),
         h('div', { class: acc.management ? 'notice ok' : 'notice' }, viaText),
-        h('label', { class: 'check section' }, stealthBox, h('span', null, 'Stealth', h('br'),
-          h('span', { class: 'hint' }, 'Only management devices, trusted networks and this server can open this page. Let\'s Encrypt and live setup links keep working.'))),
+        h('div', { class: 'section' }, switchRow(stealthBox, 'Stealth', 'Only management devices, trusted networks and this server can open this page. Let\'s Encrypt and live setup links keep working.')),
         h('div', { class: 'grid section' },
           h('div', { class: 'field' }, h('span', { class: 'legend' }, 'Management devices'),
             managers.length ? h('div', { class: 'chips' }, managers.map((p) => h('a', { class: 'badge', href: '#/peers/' + p.id }, p.name)))
               : h('span', { class: 'muted' }, 'None yet'),
             h('span', { class: 'hint' }, 'Turn on Management access on a peer\'s page. ', go('#/peers', 'Peers'))),
-          h('div', { class: 'field' }, h('label', { htmlFor: 'stl-tr' }, 'Trusted networks'), trustedInput,
-            h('span', { class: 'hint' }, 'Optional, e.g. 192.168.1.0/24. Every device on these networks can open this page without the VPN.')),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'stl-tr' }, 'Trusted networks'),
+            h('form', { class: 'inlineform', onSubmit: saveTrusted }, trustedInput, trustedSave),
+            h('span', { class: 'hint' }, 'Optional, e.g. 192.168.1.0/24. Every device on these networks can open this page without the VPN.'), trustedState.note, trustedErr),
           h('div', { class: 'field' })),
         h('p', { class: 'hint', style: { margin: '16px 0 0' } }, 'Locked out? Over SSH: ', h('span', { class: 'mono' }, recovery), '. Or set "stealth": {"enabled": false} in config.json and run systemctl reload ghostwire.')),
 
@@ -2713,7 +2773,7 @@
 
       groupHead('g-web', 'Web interface', 'Where this interface listens, and its certificate.'),
       h('form', { class: 'card', onSubmit: saveWeb, 'aria-labelledby': 'web' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'web' }, 'Address and HTTPS'), h('span', { class: 'saves' }, 'Save, then restart')),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'web' }, 'Address and HTTPS')),
         h('p', { class: 'lead' }, 'Usually set once during install.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'la' }, 'Listen address'), h('input', { id: 'la', class: 'mono', value: web.listen, onInput: (e) => { web.listen = e.target.value.trim(); } })),
@@ -2723,11 +2783,11 @@
         h('div', { class: 'section' }, fAcme, fFiles),
         webErr,
         webRestart,
-        h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
+        h('div', { class: 'formfoot' }, webState.note, h('span', { class: 'hint' }, 'Takes effect after a restart'), webSave)),
 
       groupHead('dns', 'DNS', 'How GHOSTWIRE looks up names: update check, geo databases, Let\'s Encrypt and public IP detection. Devices use the DNS in their configs, set under Server.'),
       h('form', { class: 'card', onSubmit: saveDNS, 'aria-labelledby': 'dnsh' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'dnsh' }, 'DNS servers'), h('span', { class: 'saves' }, 'Save, no restart')),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'dnsh' }, 'DNS servers')),
         h('p', { class: 'lead' }, 'Only GHOSTWIRE uses this. Other programs on the server keep the system DNS.'),
         h('fieldset', null, h('legend', { class: 'sr' }, 'Which DNS servers GHOSTWIRE uses'),
           h('div', { class: 'grid' },
@@ -2736,11 +2796,11 @@
         dnsCustom,
         dnsResult,
         dnsErr,
-        h('div', { class: 'formfoot' }, h('button', { type: 'button', class: 'btn', onClick: testDNS }, 'Test'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
+        h('div', { class: 'formfoot' }, dnsState.note, h('button', { type: 'button', class: 'btn', onClick: testDNS }, 'Test'), dnsSave)),
 
       groupHead('logs', 'Logs & history', 'What the server records and for how long. The log itself is on the Log page.'),
       h('form', { class: 'card', onSubmit: saveRetention, 'aria-labelledby': 'ret' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'ret' }, 'Log and traffic history'), h('span', { class: 'saves' }, 'Save, no restart')),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'ret' }, 'Log and traffic history')),
         h('p', { class: 'lead' }, 'Lower limits delete older data when you save. All-time totals are always kept.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'lv' }, 'Log level'), levelSel),
@@ -2751,12 +2811,11 @@
           h('div', { class: 'field' }, h('label', { htmlFor: 'rd' }, 'Daily traffic history'), daily, h('span', { class: 'hint' }, 'Used by the 7- and 30-day charts and the connection history')),
           h('div', { class: 'field' })),
         retErr,
-        h('div', { class: 'formfoot' }, h('a', { class: 'btn', href: '#/log' }, 'Open the log'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
+        h('div', { class: 'formfoot' }, retState.note, h('a', { class: 'btn', href: '#/log' }, 'Open the log'), retSave)),
 
       h('section', { class: 'card', 'aria-labelledby': 'geo-h' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'geo-h' }, 'Country and network lookup'), h('span', { class: 'saves' }, 'Saves right away')),
-        h('label', { class: 'check' }, geoBox, h('span', null, 'Show country and network of peer addresses', h('br'),
-          h('span', { class: 'hint' }, 'Downloads the free DB-IP Lite databases (about 20 MB) once a month and looks addresses up on this server only. ' + geoStatus)))),
+        h('div', { class: 'cardhead' }, h('h3', { id: 'geo-h' }, 'Country and network lookup')),
+        switchRow(geoBox, 'Show country and network of peer addresses', 'Downloads the free DB-IP Lite databases (about 20 MB) once a month and looks addresses up on this server only. ' + geoStatus)),
 
       groupHead('g-upkeep', 'Upkeep', 'New versions and copies of your settings.'),
       updatesCard(s.updates),
@@ -2778,6 +2837,7 @@
           h('button', { type: 'button', class: 'btn', onClick: async () => {
             if (await confirmDialog({ title: 'Restart the service?', text: 'The web interface is gone for a few seconds, then the page reloads. VPN connections stay up.', ok: 'Restart' })) restartNow();
           } }, 'Restart service'))));
+    for (const f of [webState, dnsState, retState, trustedState]) f.attach();
     drawCopies();
     const jumpTo = location.hash.split('#')[2];
     if (jumpTo) document.getElementById(jumpTo)?.scrollIntoView();
