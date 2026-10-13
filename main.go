@@ -255,6 +255,7 @@ func run(configPath string) error {
 		}
 	}()
 
+	app.stealthTLS(webTLS, cfg.Web.TLS.Domain)
 	srv := &http.Server{
 		Addr:              cfg.Web.Listen,
 		Handler:           app.routes(),
@@ -275,7 +276,7 @@ func run(configPath string) error {
 	}
 	go func() {
 		if webTLS.Config != nil {
-			errc <- srv.ServeTLS(ln, "", "")
+			errc <- srv.ServeTLS(app.stealthListener(ln), "", "")
 		} else {
 			errc <- srv.Serve(ln)
 		}
@@ -283,10 +284,12 @@ func run(configPath string) error {
 	slog.Info("web interface listening", "addr", cfg.Web.Listen, "tls", cfg.Web.TLS.Mode)
 
 	if cfg.Web.HTTPListen != "" && cfg.Web.TLS.Mode != "off" {
-		var h http.Handler = http.HandlerFunc(redirectToHTTPS(cfg.Web.Listen))
+		var h, challenges http.Handler = http.HandlerFunc(redirectToHTTPS(cfg.Web.Listen)), nil
 		if webTLS.ACME != nil {
 			h = webTLS.ACME.HTTPHandler(h) // also answers http-01 challenges
+			challenges = webTLS.ACME.HTTPHandler(http.NotFoundHandler())
 		}
+		h = app.stealthPort80(h, challenges, cfg.Web.TLS.Domain)
 		hs := &http.Server{Addr: cfg.Web.HTTPListen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 		servers = append(servers, hs)
 		go func() {

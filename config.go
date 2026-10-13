@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,7 +36,7 @@ type Config struct {
 	Peers   []Peer        `json:"peers"`
 	Log     LogConfig     `json:"log"`
 	Stats   StatsConfig   `json:"stats"`
-	Decoy   DecoyConfig   `json:"decoy"`
+	Stealth StealthConfig `json:"stealth"`
 	SignIn  SignInConfig  `json:"signin"`
 	Updates UpdatesConfig `json:"updates"`
 	DNS     DNSConfig     `json:"dns"` // for this service's own lookups, not the peers'
@@ -54,11 +56,12 @@ type SignInConfig struct {
 	RequireMFA bool `json:"requireMfa"`
 }
 
-// DecoyConfig replaces the web interface with a stock web server page.
-// The API keeps working, so the iOS app can turn it off again.
-type DecoyConfig struct {
-	Enabled bool   `json:"enabled"`
-	Page    string `json:"page"` // nginx | apache | soon
+// StealthConfig hides the web interface and the API from everyone but the
+// management sources (see stealth.go).
+type StealthConfig struct {
+	Enabled bool `json:"enabled"`
+	// Trusted networks count as management sources, e.g. the home LAN.
+	Trusted []string `json:"trusted"`
 }
 
 // StatsConfig sets how long traffic history is kept in stats.json.
@@ -191,7 +194,10 @@ type Peer struct {
 	Keepalive  *int     `json:"keepalive,omitempty"` // nil = server default
 	// LatencyCheck says when the server pings the peer through the tunnel:
 	// "" (off), "active" (while the device sends traffic) or "always".
-	LatencyCheck string     `json:"latencyCheck,omitempty"`
+	LatencyCheck string `json:"latencyCheck,omitempty"`
+	// Manage lets the device reach the web interface and the API through the
+	// tunnel while Stealth is on.
+	Manage       bool       `json:"manage,omitempty"`
 	Created      time.Time  `json:"created"`
 	ConfigIssued *time.Time `json:"configIssued,omitempty"`
 	// Setup is a pending one-time setup link. A peer created with a link has
@@ -284,8 +290,8 @@ func (c *Config) applyDefaults() {
 	if c.Stats.DailyDays == 0 {
 		c.Stats.DailyDays = 400
 	}
-	if c.Decoy.Page == "" {
-		c.Decoy.Page = "nginx"
+	if c.Stealth.Trusted == nil {
+		c.Stealth.Trusted = []string{}
 	}
 	if c.APITokens == nil {
 		c.APITokens = []APIToken{}
@@ -434,8 +440,8 @@ func (c *Config) validate() error {
 	if err := validateDNSServers(c.DNS.Servers); err != nil {
 		return err
 	}
-	if _, ok := decoyPages[c.Decoy.Page]; !ok {
-		return fmt.Errorf("unknown decoy page %q", c.Decoy.Page)
+	if err := validateTrusted(c.Stealth.Trusted); err != nil {
+		return err
 	}
 	if err := validateListen(c.Web.Listen, "listen address", false); err != nil {
 		return err
@@ -541,6 +547,10 @@ func (c *Config) validate() error {
 			return fmt.Errorf("peer %q: latency check must be off, active or always", p.Name)
 		}
 	}
+	// Without a management peer, Stealth would lock every admin out.
+	if c.Stealth.Enabled && !slices.ContainsFunc(c.Peers, func(p Peer) bool { return p.manages() }) {
+		return errors.New("Stealth needs at least one enabled peer with management access")
+	}
 	return nil
 }
 
@@ -636,12 +646,21 @@ func (s *Store) Get() *Config {
 	return s.cfg.clone()
 }
 
+// current returns the config itself, not a copy, for readers on hot paths
+// that must not change it. Updates swap in a new config and never modify the
+// old one, so it stays valid.
+func (s *Store) current() *Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
 // Update applies fn to a copy, validates and saves it, then swaps it in.
 func (s *Store) Update(fn func(c *Config) error) error {
 	s.mu.Lock()
 	old := s.cfg
 	next := old.clone()
-	if err := fn(next); err != nil {
+	if err := safeUpdate(fn, next); err != nil {
 		s.mu.Unlock()
 		return err
 	}
@@ -674,6 +693,18 @@ func (s *Store) Update(fn func(c *Config) error) error {
 		s.onChange(old.clone(), next.clone())
 	}
 	return nil
+}
+
+// safeUpdate runs fn and turns a panic into an error, so a bug in one
+// handler cannot leave the store locked and every later request hanging.
+func safeUpdate(fn func(c *Config) error, c *Config) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("config update failed", "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+			err = fmt.Errorf("internal error: %v", p)
+		}
+	}()
+	return fn(c)
 }
 
 // Reload re-reads config.json from disk, e.g. after "-passwd" changed it.

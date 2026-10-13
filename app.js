@@ -1114,6 +1114,11 @@
 
         updateBanner(),
 
+        st.stealth && st.stealth.on ? h('div', { class: 'strip' },
+          h('span', null, h('strong', null, 'Stealth on'), ' · ' + st.stealth.managers + (st.stealth.managers === 1 ? ' management device' : ' management devices')),
+          h('span', { class: 'muted' }, st.stealth.closed24h.toLocaleString() + (st.stealth.closed24h === 1 ? ' connection' : ' connections') + ' from outside closed in the last 24 h'),
+          go('#/settings#stealth', 'Settings')) : null,
+
         h('div', { class: 'tiles' },
           h('div', { class: 'card tile' }, h('div', { class: 'k' }, 'Peers online'),
             h('div', { class: 'v' }, String(st.peers.online), h('small', null, '/ ' + st.peers.total)),
@@ -1472,7 +1477,7 @@
         return hit && keep;
       });
       tbody.replaceChildren(...sorted(rows).map((p) => h('tr', null,
-        h('td', null, peerLink(p), p.note ? h('div', { class: 'note' }, p.note) : null),
+        h('td', null, peerLink(p), p.manage ? h('span', { class: 'tag plain', title: 'Can open the web interface while Stealth is on' }, 'Management') : null, p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
         h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
@@ -1772,11 +1777,17 @@
     const latHint = h('span', { class: 'hint' }, LAT_HINTS[p.latencyCheck]);
     const lc = h('select', { id: 'lc', onChange: () => { latHint.textContent = LAT_HINTS[lc.value]; } },
       [['off', 'Off'], ['active', 'While the device is active'], ['always', 'Always']].map(([v, t]) => h('option', { value: v, selected: v === p.latencyCheck }, t)));
+    // A split-tunnel device reaches the server's public address over the
+    // internet, not through the tunnel, so Stealth turns it away there.
+    const splitNote = h('div', { class: 'notice', style: { marginTop: '12px' }, hidden: !p.manage || p.fullTunnel },
+      'This device sends only some traffic through the VPN, so it reaches this server\'s public address over the internet, where Stealth turns it away. Send all traffic through the VPN (Client AllowedIPs above), or add this server\'s public address to its AllowedIPs. The second works in the WireGuard apps for iOS, Android, macOS and Windows, but not with wg-quick on Linux. Then issue a new config.');
+    const mg = h('input', { type: 'checkbox', id: 'mg', checked: p.manage, onChange: () => { splitNote.hidden = !mg.checked || p.fullTunnel; } });
     const save = async (e) => {
       e.preventDefault();
       err.textContent = '';
       try {
         const body = { name: name.value, note: note.value, ipv4: ip.value.trim(), latencyCheck: lc.value, ...overrides(dns, allowed, ka, srv) };
+        if (mg.checked !== p.manage) body.manage = mg.checked;
         const res = await api('PATCH', '/peers/' + id, body);
         applied(res, 'Saved');
         render();
@@ -1787,7 +1798,8 @@
       back('#/peers', 'Peers'),
       h('div', { class: 'head' },
         h('div', null,
-          h('div', { class: 'titleline' }, h('h1', null, p.name), badge(st.key === 'online' ? { ...st, label: 'Online · handshake ' + ago(p.stats.lastHandshake) } : st)),
+          h('div', { class: 'titleline' }, h('h1', null, p.name), badge(st.key === 'online' ? { ...st, label: 'Online · handshake ' + ago(p.stats.lastHandshake) } : st),
+            p.manage ? h('span', { class: 'badge' }, 'Management') : null),
           h('p', { class: 'sub' }, (p.note ? p.note + ' · ' : '') + 'created ' + fmtDate(p.created))),
         h('div', { class: 'actions' },
           h('button', { type: 'button', class: 'btn', onClick: toggle }, p.enabled ? 'Disable' : 'Enable'),
@@ -1840,13 +1852,17 @@
 
       h('form', { class: 'card', onSubmit: save },
         h('h2', null, 'Settings'),
-        h('p', { class: 'lead' }, 'Name, address and latency check changes apply immediately. DNS, AllowedIPs and keepalive are part of the client config: they take effect after the config is issued again.'),
+        h('p', { class: 'lead' }, 'Name, address, latency check and management access apply immediately. DNS, AllowedIPs and keepalive are part of the client config: they take effect after the config is issued again.'),
         h('div', { class: 'grid' },
           h('div', { class: 'field' }, h('label', { htmlFor: 'n' }, 'Name'), name, h('span', { class: 'hint' }, 'Letters, numbers, . _ @ - · max 32')),
           h('div', { class: 'field' }, h('label', { htmlFor: 'no' }, 'Note'), note),
           h('div', { class: 'field' }, h('label', { htmlFor: 'ip' }, 'IPv4 address'), ip, h('span', { class: 'hint' }, 'Changing it requires a new client config')),
           ka.el, allowed.el, dns.el,
           h('div', { class: 'field' }, h('label', { htmlFor: 'lc' }, 'Latency check'), lc, latHint)),
+        h('div', { class: 'section' },
+          h('label', { class: 'check' }, mg, h('span', null, 'Management access', h('br'),
+            h('span', { class: 'hint' }, 'This device can open the web interface and the API while Stealth is on. It still has to sign in.')))),
+        splitNote,
         err,
         h('div', { class: 'formfoot' },
           h('button', { type: 'button', class: 'btn', onClick: render }, 'Cancel'),
@@ -2291,7 +2307,7 @@
       fill(wrap, h('h1', null, 'Settings'), h('div', { class: 'notice' }, 'API tokens cannot change settings. Sign in to the web interface.'));
       return;
     }
-    const [s, tk, us] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens'), api('GET', '/users')]);
+    const [s, tk, us, pl] = await Promise.all([api('GET', '/settings'), api('GET', '/tokens'), api('GET', '/users'), api('GET', '/peers')]);
 
     // users
     const userBody = h('tbody');
@@ -2485,24 +2501,53 @@
       } catch (x) { e.target.checked = !on; toast(x.message, true); }
     } });
 
-    // decoy
-    const decoyPages = [['nginx', 'nginx welcome page'], ['apache', 'Apache "It works!" page'], ['soon', '"Coming soon" page'], ['blank', 'Blank page'], ['forbidden', '"Forbidden" page'], ['private', '"Private server" page']];
-    const decoyBox = h('input', { type: 'checkbox', id: 'dc', checked: s.decoy.enabled, onChange: async (e) => {
+    // stealth
+    const managers = pl.peers.filter((p) => p.manage && p.enabled && p.publicKey);
+    const acc = s.access;
+    const viaText = acc.via === 'peer' ? 'You\'re connected through ' + acc.peer.name + (acc.management ? ', which has management access.' : ', which doesn\'t have management access.')
+      : acc.via === 'server' ? 'You\'re connected from this server itself.'
+        : acc.via === 'trusted' ? 'You\'re connected from a trusted network.'
+          : 'You\'re connected over the internet, not through the VPN.';
+    const keepText = acc.via === 'peer' ? 'You\'re connected through ' + acc.peer.name + ', so this page keeps working.'
+      : acc.via === 'server' ? 'You\'re on this server itself, so this page keeps working.' : 'You\'re on a trusted network, so this page keeps working.';
+    const listenPort = s.web.listen.split(':').pop();
+    const recovery = s.web.tls.mode === 'off'
+      ? 'ssh -L 8443:' + s.web.listen + ' root@server, then open http://localhost:8443'
+      : 'ssh -L 8443:127.0.0.1:' + listenPort + ' root@server, then open https://localhost:8443';
+    const stealthBox = h('input', { type: 'checkbox', id: 'stl-on', checked: s.stealth.enabled, onChange: async (e) => {
       const on = e.target.checked;
-      if (on) {
-        const hasApp = (tk.tokens || []).some((t) => t.scope === 'rw');
-        if (!await confirmDialog({ title: 'Turn on Decoy?', ok: 'Turn on', danger: true,
-          text: 'The web interface disappears right away and the server shows the decoy page instead. Only the iOS app can turn Decoy off again.' +
-            (hasApp ? '' : ' No iOS app with full access is paired yet, so you could not get the web interface back.') })) {
-          e.target.checked = false;
-          return;
-        }
+      if (on && (!managers.length || !acc.management)) {
+        e.target.checked = false;
+        dialog((close) => h('div', { class: 'dlg' },
+          h('h2', null, managers.length ? 'Connect through a management device first' : 'No management device yet'),
+          h('p', null, managers.length
+            ? viaText + ' Turning on Stealth now would lock this browser out. Connect this device to the VPN with a peer that has management access, then reload this page.'
+            : 'Open the peer of a device you manage this server from, turn on Management access there, and connect through it. Then turn on Stealth.'),
+          h('div', { class: 'foot' }, h('button', { type: 'button', class: 'btn primary', onClick: close }, 'OK'))));
+        return;
       }
-      try { await api('PATCH', '/settings', { decoy: { ...s.decoy, enabled: on } }); s.decoy.enabled = on; toast(on ? 'Decoy on. This tab keeps working until you close or reload it' : 'Decoy off'); } catch (x) { e.target.checked = !on; toast(x.message, true); }
+      const others = (s.stealth.trusted.length ? ', the trusted networks' : '') + ' and this server';
+      const ok = on
+        ? await confirmDialog({ title: 'Turn on Stealth?', ok: 'Turn on',
+          text: 'The web interface and the API stop answering everyone except ' + managers.length + (managers.length === 1 ? ' management device' : ' management devices') + others + '. Live setup links keep working until they\'re used or expire. ' + keepText })
+        : await confirmDialog({ title: 'Turn off Stealth?', ok: 'Turn off', danger: true,
+          text: 'Everyone who reaches this server sees the sign-in page again.' });
+      if (!ok) { e.target.checked = !on; return; }
+      try {
+        const res = await api('PATCH', '/settings', { stealth: { ...s.stealth, enabled: on } });
+        s.stealth.enabled = on;
+        applied(res, on ? 'Stealth on' : 'Stealth off');
+      } catch (x) { e.target.checked = !on; toast(x.message, true); }
     } });
-    const decoySel = h('select', { id: 'dp', onChange: async (e) => {
-      try { await api('PATCH', '/settings', { decoy: { ...s.decoy, page: e.target.value } }); s.decoy.page = e.target.value; toast('Decoy page saved'); } catch (x) { e.target.value = s.decoy.page; toast(x.message, true); }
-    } }, decoyPages.map(([v, t]) => h('option', { value: v, selected: s.decoy.page === v }, t)));
+    const trustedInput = h('input', { id: 'stl-tr', class: 'mono', value: s.stealth.trusted.join(', '), placeholder: 'none', onChange: async (e) => {
+      const list = e.target.value.split(/[\s,]+/).filter(Boolean);
+      try {
+        await api('PATCH', '/settings', { stealth: { ...s.stealth, trusted: list } });
+        s.stealth.trusted = list;
+        e.target.value = list.join(', ');
+        toast('Trusted networks saved');
+      } catch (x) { e.target.value = s.stealth.trusted.join(', '); toast(x.message, true); }
+    } });
 
     // DNS for this service's own lookups (not the peers')
     const dnsField = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { htmlFor: id }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
@@ -2624,7 +2669,7 @@
     fill(wrap,
       h('div', null, h('h1', null, 'Settings'), h('p', { class: 'sub' }, 'Who can sign in, the web interface, logs and history, updates and backups')),
 
-      groupHead('g-access', 'Access', 'Who can sign in, and how.'),
+      groupHead('g-access', 'Access', 'Who can sign in, how, and from where.'),
       h('section', { class: 'card flush', 'aria-labelledby': 'usr' },
         h('div', { class: 'cardhead' },
           h('div', null, h('h3', { id: 'usr' }, 'Users'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'Everyone here is an admin. You cannot delete yourself, so one user always remains.')),
@@ -2642,6 +2687,22 @@
           h('div', { class: 'field' }, h('label', { htmlFor: 'st' }, 'Stay signed in for'), sessSel, h('span', { class: 'hint' }, 'Applies to new sign-ins')),
           h('div', { class: 'field' }), h('div', { class: 'field' }))),
 
+      h('section', { class: 'card', id: 'stealth', 'aria-labelledby': 'stl' },
+        h('div', { class: 'cardhead' }, h('h3', { id: 'stl' }, 'Stealth'), h('span', { class: 'saves' }, 'Saves right away')),
+        h('p', { class: 'lead' }, 'Hides the web interface and the API from everyone except management devices, which reach it through the VPN. Everyone else gets no page and no certificate.'),
+        h('div', { class: acc.management ? 'notice ok' : 'notice' }, viaText),
+        h('label', { class: 'check section' }, stealthBox, h('span', null, 'Stealth', h('br'),
+          h('span', { class: 'hint' }, 'Only management devices, trusted networks and this server can open this page. Let\'s Encrypt and live setup links keep working.'))),
+        h('div', { class: 'grid section' },
+          h('div', { class: 'field' }, h('span', { class: 'legend' }, 'Management devices'),
+            managers.length ? h('div', { class: 'chips' }, managers.map((p) => h('a', { class: 'badge', href: '#/peers/' + p.id }, p.name)))
+              : h('span', { class: 'muted' }, 'None yet'),
+            h('span', { class: 'hint' }, 'Turn on Management access on a peer\'s page. ', go('#/peers', 'Peers'))),
+          h('div', { class: 'field' }, h('label', { htmlFor: 'stl-tr' }, 'Trusted networks'), trustedInput,
+            h('span', { class: 'hint' }, 'Optional, e.g. 192.168.1.0/24. Every device on these networks can open this page without the VPN.')),
+          h('div', { class: 'field' })),
+        h('p', { class: 'hint', style: { margin: '16px 0 0' } }, 'Locked out? Over SSH: ', h('span', { class: 'mono' }, recovery), '. Or set "stealth": {"enabled": false} in config.json and run systemctl reload ghostwire.')),
+
       h('section', { class: 'card', 'aria-labelledby': 'api' },
         h('div', { class: 'cardhead' },
           h('div', null, h('h3', { id: 'api' }, 'iOS app and API tokens'), h('p', { class: 'lead', style: { marginBottom: '0' } }, 'For the iOS app and scripts. A token appears once when you create it, and only a hash is stored.')),
@@ -2650,7 +2711,7 @@
           h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Owner'), h('th', null, 'Access'), h('th', null, 'Created'), h('th', null, 'Last used'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
           tbody))),
 
-      groupHead('g-web', 'Web interface', 'Where this interface listens and what strangers see.'),
+      groupHead('g-web', 'Web interface', 'Where this interface listens, and its certificate.'),
       h('form', { class: 'card', onSubmit: saveWeb, 'aria-labelledby': 'web' },
         h('div', { class: 'cardhead' }, h('h3', { id: 'web' }, 'Address and HTTPS'), h('span', { class: 'saves' }, 'Save, then restart')),
         h('p', { class: 'lead' }, 'Usually set once during install.'),
@@ -2663,14 +2724,6 @@
         webErr,
         webRestart,
         h('div', { class: 'formfoot' }, h('button', { type: 'submit', class: 'btn primary' }, 'Save'))),
-
-      h('section', { class: 'card', 'aria-labelledby': 'dcy' },
-        h('div', { class: 'cardhead' }, h('h3', { id: 'dcy' }, 'Decoy'), h('span', { class: 'saves' }, 'Saves right away')),
-        h('p', { class: 'lead' }, 'Shows an ordinary web server page instead of this interface. The iOS app and setup links keep working.'),
-        h('label', { class: 'check' }, decoyBox, h('span', null, 'Decoy', h('br'),
-          h('span', { class: 'hint' }, 'Hides the web interface. Turn it off again in the iOS app.'))),
-        h('div', { class: 'grid section' },
-          h('div', { class: 'field' }, h('label', { htmlFor: 'dp' }, 'Decoy page'), decoySel))),
 
       groupHead('dns', 'DNS', 'How GHOSTWIRE looks up names: update check, geo databases, Let\'s Encrypt and public IP detection. Devices use the DNS in their configs, set under Server.'),
       h('form', { class: 'card', onSubmit: saveDNS, 'aria-labelledby': 'dnsh' },

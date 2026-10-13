@@ -35,6 +35,13 @@ func metaEq(key expr.MetaKey, data []byte) []expr.Any {
 }
 
 func iif(n string) []expr.Any { return metaEq(expr.MetaKeyIIFNAME, ifname(n)) }
+
+func iifNot(n string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: ifname(n)},
+	}
+}
 func oif(n string) []expr.Any { return metaEq(expr.MetaKeyOIFNAME, ifname(n)) }
 
 // addrMatch matches the source (src=true) or destination address against a
@@ -116,6 +123,14 @@ func applyFirewall(c *Config, up4, up6 string, lan []netip.Prefix) error {
 
 	if s.OpenPort {
 		add(input, rule(udpDport(s.ListenPort), accept))
+	}
+	// Stealth trusts tunnel addresses, so they may only come from the tunnel
+	// (or from the server itself, which owns the first one).
+	if c.Stealth.Enabled {
+		add(input, rule(addrMatch(netip.MustParsePrefix(s.IPv4), true), iifNot(wg), iifNot("lo"), drop))
+		if s.IPv6Enabled {
+			add(input, rule(addrMatch(netip.MustParsePrefix(s.IPv6), true), iifNot(wg), iifNot("lo"), drop))
+		}
 	}
 
 	if s.PeerToPeer {

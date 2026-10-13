@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 func TestMapIPv6(t *testing.T) {
@@ -1091,16 +1094,12 @@ func TestUsers(t *testing.T) {
 	}
 }
 
-// TestDecoy checks that the decoy hides the web interface but leaves the API
-// and live setup links alone.
-func TestDecoy(t *testing.T) {
+// TestWebFiles checks that the page loads its files fingerprinted.
+func TestWebFiles(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openStore(filepath.Join(dir, "config.json"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if store.Get().Decoy.Page != "nginx" {
-		t.Fatalf("default decoy page %q", store.Get().Decoy.Page)
 	}
 	k := &fakeKernel{}
 	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
@@ -1109,7 +1108,7 @@ func TestDecoy(t *testing.T) {
 	srv := httptest.NewServer(app.routes())
 	defer srv.Close()
 
-	get := func(path string, want int) (string, http.Header) {
+	get := func(path string) (string, http.Header) {
 		t.Helper()
 		resp, err := http.Get(srv.URL + path)
 		if err != nil {
@@ -1117,74 +1116,437 @@ func TestDecoy(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != want {
-			t.Fatalf("GET %s: status %d, want %d", path, resp.StatusCode, want)
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET %s: status %d", path, resp.StatusCode)
 		}
 		return string(b), resp.Header
 	}
-	set := func(fn func(c *Config)) {
-		if err := store.Update(func(c *Config) error { fn(c); return nil }); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	b, _ := get("/", 200)
+	b, _ := get("/")
 	if !strings.Contains(b, `"/app.js?v=`+assetHash["app.js"]+`"`) || !strings.Contains(b, `"/app.css?v=`+assetHash["app.css"]+`"`) {
 		t.Fatalf("web interface not served with fingerprinted files: %q", b)
 	}
-	if _, h := get("/app.js?v="+assetHash["app.js"], 200); !strings.Contains(h.Get("Cache-Control"), "immutable") {
+	if _, h := get("/app.js?v=" + assetHash["app.js"]); !strings.Contains(h.Get("Cache-Control"), "immutable") {
 		t.Fatalf("fingerprinted app.js: %v", h)
 	}
-	if _, h := get("/app.js?v=old", 200); h.Get("Cache-Control") != "no-cache" {
+	if _, h := get("/app.js?v=old"); h.Get("Cache-Control") != "no-cache" {
 		t.Fatalf("stale app.js cached: %v", h)
 	}
-	set(func(c *Config) {
-		v4 := netip.MustParsePrefix(c.Server.IPv4)
-		c.Peers = append(c.Peers, Peer{ID: "p1", Name: "phone", IPv4: v4.Addr().Next().Next().Next().String(), Setup: &SetupLink{Token: "live-token", Expires: time.Now().Add(time.Hour)}})
-		c.Decoy.Enabled = true
-	})
-
-	b, h := get("/", 200)
-	if !strings.Contains(b, "Welcome to nginx!") || h.Get("Server") != nginxServer || h.Get("Content-Security-Policy") != "" {
-		t.Fatalf("nginx decoy: %q %v", b, h)
-	}
-	for _, p := range []string{"/app.js", "/app.css", "/favicon.svg", "/ShipporiMinchoB1-ExtraBold.woff2", "/setup/wrong", "/setup/wrong/app.css", "/setup/live-token/app.js"} {
-		if b, _ := get(p, 404); strings.Contains(b, "GHOSTWIRE") || !strings.Contains(b, "404 Not Found") {
-			t.Fatalf("%s leaks: %q", p, b)
-		}
-	}
-	if b, _ := get("/setup/live-token", 200); !strings.Contains(b, `src="/setup/live-token/setup.js?v=`+assetHash["setup.js"]+`"`) {
+	if b, _ := get("/setup/some-token"); !strings.Contains(b, `src="/setup/some-token/setup.js?v=`+assetHash["setup.js"]+`"`) {
 		t.Fatalf("setup page files not under the link: %q", b)
 	}
-	get("/setup/live-token/app.css", 200)
-	get("/api/v1/setup/live-token", 200)
-	get("/api/v1/status", 401)
+}
 
-	set(func(c *Config) { c.Decoy.Page = "apache" })
-	if b, _ := get("/nope", 404); !strings.Contains(b, "Apache/2.4.58 (Ubuntu) Server at 127.0.0.1 Port") {
-		t.Fatalf("apache 404: %q", b)
+// TestStealth goes through the API as a browser would. The test client
+// connects from loopback, so X-Forwarded-For stands in for where a request
+// comes from: a public address, a peer's tunnel address or the server.
+func TestStealth(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	set(func(c *Config) { c.Decoy.Page = "soon" })
-	if b, h := get("/", 200); !strings.Contains(b, "<p class=\"host\">127.0.0.1</p>") || h.Get("Server") != "" {
-		t.Fatalf("soon decoy: %q", b)
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error {
+		c.Users[0].PasswordHash = hash
+		c.Server.IPv6Enabled = true
+		return nil
+	})
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+	jar, _ := cookiejar.New(nil)
+	cl := &http.Client{Jar: jar}
+
+	const public = "203.0.113.9"
+	var bearer string
+	// do returns the status, or 0 when the server closed the connection
+	// without a response.
+	do := func(from, method, path string, body any) (int, map[string]any) {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			rd = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequest(method, srv.URL+path, rd)
+		req.Header.Set("Content-Type", "application/json")
+		if from != "" {
+			req.Header.Set("X-Forwarded-For", from)
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			return 0, nil
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
 	}
-	set(func(c *Config) { c.Decoy.Page = "blank" })
-	if b, _ := get("/", 200); b != "" {
-		t.Fatalf("blank decoy: %q", b)
+	call := func(from, method, path string, body any, want int) map[string]any {
+		t.Helper()
+		code, out := do(from, method, path, body)
+		if code != want {
+			t.Fatalf("%s %s from %q: status %d, want %d: %v", method, path, from, code, want, out)
+		}
+		return out
 	}
-	if b, _ := get("/app.js", 404); b != "" {
-		t.Fatalf("blank 404: %q", b)
+	on := map[string]any{"stealth": map[string]any{"enabled": true}}
+	off := map[string]any{"stealth": map[string]any{"enabled": false}}
+
+	call("", "POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "a long test password"}, 200)
+	phone := call("", "POST", "/api/v1/peers", map[string]any{"name": "phone"}, 201)["peer"].(map[string]any)
+	laptop := call("", "POST", "/api/v1/peers", map[string]any{"name": "laptop", "allowedIPs": []string{"10.0.0.0/8"}}, 201)["peer"].(map[string]any)
+	phoneIP, phoneIP6, laptopIP := phone["ipv4"].(string), phone["ipv6"].(string), laptop["ipv4"].(string)
+	if phone["fullTunnel"] != true || laptop["fullTunnel"] != false {
+		t.Fatalf("fullTunnel: phone %v, laptop %v", phone["fullTunnel"], laptop["fullTunnel"])
 	}
-	set(func(c *Config) { c.Decoy.Page = "forbidden" })
-	if b, _ := get("/", 403); !strings.Contains(b, "Forbidden") {
-		t.Fatalf("forbidden decoy: %q", b)
+
+	// Turning it on: not without a management peer, and not from a browser
+	// it would lock out.
+	call("", "PATCH", "/api/v1/settings", on, 400)
+	call("", "PATCH", "/api/v1/peers/"+phone["id"].(string), map[string]any{"manage": true}, 200)
+	call(public, "PATCH", "/api/v1/settings", on, 400)
+	call(laptopIP, "PATCH", "/api/v1/settings", on, 400)
+	if a := call(phoneIP, "GET", "/api/v1/settings", nil, 200)["access"].(map[string]any); a["management"] != true || a["via"] != "peer" || a["peer"].(map[string]any)["name"] != "phone" {
+		t.Fatalf("access through the phone: %v", a)
 	}
-	set(func(c *Config) { c.Decoy.Page = "private" })
-	if b, _ := get("/", 200); !strings.Contains(b, "Private server") {
-		t.Fatalf("private decoy: %q", b)
+	if a := call(public, "GET", "/api/v1/settings", nil, 200)["access"].(map[string]any); a["management"] != false || a["via"] != "internet" {
+		t.Fatalf("access from the internet: %v", a)
 	}
-	if err := store.Update(func(c *Config) error { c.Decoy.Page = "iis"; return nil }); err == nil {
-		t.Fatal("unknown decoy page accepted")
+	applied := k.applied
+	call(phoneIP, "PATCH", "/api/v1/settings", on, 200)
+	if k.applied == applied {
+		t.Fatal("turning on Stealth did not apply the firewall")
+	}
+
+	// Who gets through.
+	for _, from := range []string{public, laptopIP, "10.99.0.1", "2001:db8::1"} {
+		for _, path := range []string{"/", "/app.js", "/api/v1/status", "/api/v1/auth/options", "/setup/nothing", "/api/v1/setup/nothing"} {
+			if code, _ := do(from, "GET", path, nil); code != 0 {
+				t.Fatalf("GET %s from %s: status %d, want a closed connection", path, from, code)
+			}
+		}
+	}
+	for _, from := range []string{"", phoneIP, phoneIP6, "::ffff:" + phoneIP} {
+		call(from, "GET", "/", nil, 200)
+	}
+	if s := call(phoneIP, "GET", "/api/v1/status", nil, 200)["stealth"].(map[string]any); s["on"] != true || s["managers"].(float64) != 1 || s["closed24h"].(float64) < 24 {
+		t.Fatalf("status: %v", s)
+	}
+
+	// Lockout protection: the last management peer stays, and nobody cuts
+	// off the connection they are using.
+	pid := "/api/v1/peers/" + phone["id"].(string)
+	call(phoneIP, "PATCH", pid, map[string]any{"manage": false}, 400)
+	call(phoneIP, "POST", pid+"/disable", nil, 400)
+	call(phoneIP, "DELETE", pid, nil, 400)
+	call("", "PATCH", pid, map[string]any{"manage": false}, 400)
+	call(phoneIP, "PATCH", "/api/v1/peers/"+laptop["id"].(string), map[string]any{"manage": true}, 200)
+	call(laptopIP, "GET", "/", nil, 200)
+	call(phoneIP, "POST", pid+"/disable", nil, 400)
+	call(laptopIP, "POST", pid+"/disable", nil, 200)
+	if code, _ := do(phoneIP, "GET", "/", nil); code != 0 {
+		t.Fatalf("disabled management peer still gets in: %d", code)
+	}
+	call(laptopIP, "POST", pid+"/enable", nil, 200)
+
+	// Trusted networks. An invalid entry is refused, and the server keeps
+	// answering afterwards.
+	call(phoneIP, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{"office"}}}, 400)
+	call(phoneIP, "GET", "/api/v1/settings", nil, 200)
+	call(phoneIP, "PATCH", pid, map[string]any{"ipv4": "garbage"}, 400)
+	call(phoneIP, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{"0.0.0.0/0"}}}, 400)
+	call(phoneIP, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{"203.0.113.9/24"}}}, 400)
+	call(phoneIP, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{"203.0.113.0/24"}}}, 200)
+	if a := call(public, "GET", "/api/v1/settings", nil, 200)["access"].(map[string]any); a["via"] != "trusted" || a["management"] != true {
+		t.Fatalf("access from a trusted network: %v", a)
+	}
+	call(public, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{}}}, 400)
+	call(phoneIP, "PATCH", "/api/v1/settings", map[string]any{"stealth": map[string]any{"enabled": true, "trusted": []string{}}}, 200)
+
+	// A live setup link is the only public way in, and only to its own pages.
+	link := call(phoneIP, "POST", "/api/v1/peers", map[string]any{"name": "tablet", "delivery": "link"}, 201)["setup"].(map[string]any)
+	token := strings.TrimPrefix(link["path"].(string), "/setup/")
+	for _, path := range []string{"/setup/" + token, "/setup/" + token + "/setup.js", "/setup/" + token + "/app.css", "/api/v1/setup/" + token} {
+		call(public, "GET", path, nil, 200)
+	}
+	for _, path := range []string{"/", "/setup/" + token + "x", "/api/v1/status", "/api/v1/setup/" + token + "x"} {
+		if code, _ := do(public, "GET", path, nil); code != 0 {
+			t.Fatalf("GET %s next to a live link: %d", path, code)
+		}
+	}
+	_ = store.Update(func(c *Config) error {
+		for i := range c.Peers {
+			if c.Peers[i].Setup != nil {
+				c.Peers[i].Setup.Expires = time.Now().Add(-time.Minute)
+			}
+		}
+		return nil
+	})
+	if code, _ := do(public, "GET", "/setup/"+token, nil); code != 0 {
+		t.Fatalf("expired setup link still open: %d", code)
+	}
+
+	// API tokens cannot change Stealth or management access.
+	tok := call(phoneIP, "POST", "/api/v1/tokens", map[string]any{"name": "ios"}, 201)["token"].(string)
+	jar2, _ := cookiejar.New(nil)
+	cl.Jar, bearer = jar2, tok
+	call(phoneIP, "GET", "/api/v1/settings", nil, 200)
+	call(phoneIP, "PATCH", "/api/v1/settings", off, 403)
+	call(phoneIP, "PATCH", "/api/v1/peers/"+laptop["id"].(string), map[string]any{"manage": false}, 403)
+	cl.Jar, bearer = jar, ""
+
+	// Off again: everyone sees the sign-in page.
+	call(phoneIP, "PATCH", "/api/v1/settings", off, 200)
+	call(public, "GET", "/", nil, 200)
+}
+
+type fakeConn struct {
+	net.Conn
+	remote net.Addr
+	closed bool
+}
+
+func (c *fakeConn) RemoteAddr() net.Addr { return c.remote }
+func (c *fakeConn) Close() error         { c.closed = true; return nil }
+
+// TestStealthGates checks the TLS handshake and port 80 gates.
+func TestStealthGates(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := newPrivateKey()
+	v4 := netip.MustParsePrefix(store.Get().Server.IPv4)
+	phoneIP := serverIPv4(v4).Next()
+	setOn := func(on bool) {
+		t.Helper()
+		if err := store.Update(func(c *Config) error {
+			c.Peers = []Peer{{ID: "p", Name: "phone", Enabled: true, Manage: true, IPv4: phoneIP.String(), PublicKey: key.PublicKey().String()}}
+			c.Stealth.Enabled = on
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setOn(true)
+	app := &App{store: store}
+
+	var asked string
+	wt := &webTLS{ACME: &autocert.Manager{}, Config: &tls.Config{GetCertificate: func(h *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		asked = h.ServerName
+		return &tls.Certificate{}, nil
+	}}}
+	app.stealthTLS(wt, "vpn.example.net")
+	hello := func(from, sni string, protos ...string) (*tls.Config, error, bool) {
+		c := &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP(from), Port: 50000}}
+		cfg, err := wt.Config.GetConfigForClient(&tls.ClientHelloInfo{ServerName: sni, SupportedProtos: protos, Conn: c})
+		return cfg, err, c.closed
+	}
+	if cfg, err, closed := hello("203.0.113.9", "vpn.example.net"); cfg != nil || err == nil || !closed {
+		t.Fatalf("public handshake: %v %v closed=%v", cfg, err, closed)
+	}
+	if _, err, closed := hello("203.0.113.9", "", "h2", "http/1.1"); err == nil || !closed {
+		t.Fatal("public handshake without SNI not closed")
+	}
+	if cfg, err, closed := hello("203.0.113.9", "vpn.example.net", "acme-tls/1"); cfg == nil || err != nil || closed {
+		t.Fatalf("Let's Encrypt validation refused: %v", err)
+	}
+	// acme-tls/1 without a pending challenge: autocert fails, and the
+	// connection is closed instead of getting a TLS alert.
+	c := &fakeConn{remote: &net.TCPAddr{IP: net.ParseIP("203.0.113.9"), Port: 50000}}
+	ch := &tls.ClientHelloInfo{ServerName: "vpn.example.net", SupportedProtos: []string{"acme-tls/1"}, Conn: c}
+	if cfg, err := wt.Config.GetConfigForClient(ch); err != nil || cfg == nil || c.closed {
+		t.Fatalf("challenge config: %v %v", cfg, err)
+	}
+	failing := wt.Config.GetCertificate
+	wt.Config.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, errors.New("no challenge") }
+	cfg, _ := wt.Config.GetConfigForClient(ch)
+	if _, err := cfg.GetCertificate(ch); err == nil || !c.closed {
+		t.Fatal("failed challenge did not close the connection")
+	}
+	wt.Config.GetCertificate = failing
+	if cfg, err, _ := hello(phoneIP.String(), "vpn.example.net"); cfg != nil || err != nil {
+		t.Fatalf("management peer refused: %v", err)
+	}
+	cfg, err, _ = hello("127.0.0.1", "localhost")
+	if err != nil || cfg == nil {
+		t.Fatalf("loopback: %v %v", cfg, err)
+	}
+	if _, _ = cfg.GetCertificate(&tls.ClientHelloInfo{ServerName: "localhost"}); asked != "vpn.example.net" {
+		t.Fatalf("loopback got the certificate for %q", asked)
+	}
+	if cfg, err, _ := hello("127.0.0.1", "vpn.example.net"); cfg != nil || err != nil {
+		t.Fatalf("loopback with the domain: %v %v", cfg, err)
+	}
+
+	_ = store.Update(func(c *Config) error {
+		c.Peers = append(c.Peers, Peer{ID: "n", Name: "new", Enabled: true, IPv4: phoneIP.Next().String(), Setup: &SetupLink{Token: "tok", Expires: time.Now().Add(time.Hour)}})
+		return nil
+	})
+	if _, err, _ := hello("203.0.113.9", "vpn.example.net"); err != nil {
+		t.Fatalf("handshake refused while a setup link is live: %v", err)
+	}
+	setOn(false)
+	if _, err, _ := hello("203.0.113.9", "vpn.example.net"); err != nil {
+		t.Fatalf("handshake refused with Stealth off: %v", err)
+	}
+
+	// Port 80.
+	setOn(true)
+	full := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(301) })
+	challenges := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/acme-challenge/pending" {
+			http.Error(w, "acme/autocert: certificate cache miss", http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte("key-authorization"))
+	})
+	h := app.stealthPort80(full, challenges, "vpn.example.net")
+	port80 := func(from, host, path string) (code int) {
+		defer func() {
+			if recover() != nil {
+				code = 0
+			}
+		}()
+		r := httptest.NewRequest("GET", "http://"+host+path, nil)
+		r.RemoteAddr = from + ":50000"
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, c := range []struct {
+		from, host, path string
+		want             int
+	}{
+		{"203.0.113.9", "vpn.example.net", "/", 0},
+		{"203.0.113.9", "203.0.113.1", "/", 0},
+		{"203.0.113.9", "203.0.113.1", "/.well-known/acme-challenge/x", 0},
+		{"203.0.113.9", "vpn.example.net", "/.well-known/acme-challenge/x", 0},
+		{"203.0.113.9", "vpn.example.net", "/.well-known/acme-challenge/pending", 200},
+		{phoneIP.String(), "vpn.example.net", "/", 301},
+		{"127.0.0.1", "localhost", "/", 301},
+	} {
+		if got := port80(c.from, c.host, c.path); got != c.want {
+			t.Errorf("port 80 %s %s%s: %d, want %d", c.from, c.host, c.path, got, c.want)
+		}
+	}
+	setOn(false)
+	if got := port80("203.0.113.9", "vpn.example.net", "/"); got != 301 {
+		t.Errorf("port 80 with Stealth off: %d", got)
+	}
+}
+
+// TestStealthListener checks that plain bytes on the HTTPS port get no
+// answer from outside, while TLS and management sources pass.
+func TestStealthListener(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := newPrivateKey()
+	_ = store.Update(func(c *Config) error {
+		ip := serverIPv4(netip.MustParsePrefix(c.Server.IPv4)).Next()
+		c.Peers = []Peer{{ID: "p", Name: "phone", Enabled: true, Manage: true, IPv4: ip.String(), PublicKey: key.PublicKey().String()}}
+		c.Stealth.Enabled = true
+		return nil
+	})
+	app := &App{store: store}
+	read := func(from string, first byte) (int, error) {
+		server, client := net.Pipe()
+		defer client.Close()
+		go func() { _, _ = client.Write([]byte{first, 3, 1}) }()
+		c := &stealthConn{Conn: &fakeAddrConn{server, &net.TCPAddr{IP: net.ParseIP(from), Port: 1}}, a: app}
+		b := make([]byte, 3)
+		return c.Read(b)
+	}
+	if n, err := read("203.0.113.9", 'G'); n != 0 || err != io.EOF {
+		t.Fatalf("plain HTTP from outside: %d %v", n, err)
+	}
+	if n, _ := read("203.0.113.9", 0x16); n != 3 {
+		t.Fatalf("TLS from outside not passed to the handshake: %d", n)
+	}
+	if n, _ := read("127.0.0.1", 'G'); n != 3 {
+		t.Fatalf("plain HTTP from loopback: %d", n)
+	}
+}
+
+type fakeAddrConn struct {
+	net.Conn
+	remote net.Addr
+}
+
+func (c *fakeAddrConn) RemoteAddr() net.Addr { return c.remote }
+
+// TestStoreUpdatePanic checks that a panicking update leaves the store usable.
+func TestStoreUpdatePanic(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(c *Config) error { panic("boom") }); err == nil {
+		t.Fatal("panic not reported")
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.Update(func(c *Config) error { c.Log.Level = "debug"; return nil }) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("store still locked after a panic")
+	}
+}
+
+func TestStealthValidate(t *testing.T) {
+	c := testConfig(t)
+	key, _ := newPrivateKey()
+	c.Peers = []Peer{{ID: "a", Name: "phone", Enabled: true, IPv4: "10.84.12.2", PublicKey: key.PublicKey().String()}}
+	c.Stealth.Enabled = true
+	if c.validate() == nil {
+		t.Fatal("Stealth without a management peer accepted")
+	}
+	c.Peers[0].Manage = true
+	if err := c.validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(p *Peer){
+		"disabled":      func(p *Peer) { p.Enabled = false },
+		"no key yet":    func(p *Peer) { p.PublicKey = "" },
+		"not a manager": func(p *Peer) { p.Manage = false },
+	} {
+		d := c.clone()
+		mutate(&d.Peers[0])
+		if d.validate() == nil {
+			t.Errorf("%s: accepted as the only management peer", name)
+		}
+	}
+	// Only loopback and the management peer's own addresses count; not
+	// the server's tunnel address, not other peers, not the internet.
+	st := newStealthState(c)
+	for ip, want := range map[string]bool{"10.84.12.2": true, "::ffff:10.84.12.2": true, "127.0.0.1": true, "::1": true, "10.84.12.1": false, "10.84.12.3": false, "203.0.113.1": false, "": false} {
+		a, _ := netip.ParseAddr(ip)
+		if st.allows(a) != want {
+			t.Errorf("allows(%q) = %v", ip, !want)
+		}
+	}
+}
+
+func TestSetupToken(t *testing.T) {
+	for path, want := range map[string]string{"/setup/abc": "abc", "/setup/abc/app.css": "abc", "/api/v1/setup/abc": "abc", "/setup/": "", "/": "", "/api/v1/status": "", "/x/setup/abc": "",
+		"/setup/abc/../../api/v1/status": "", "/setup/abc/x/y": "", "/setup/abc/": "", "/setup//abc": "", "/api/v1/setup/abc/x": "", "/setup/abc/..": ""} {
+		if got := setupToken(path); got != want {
+			t.Errorf("setupToken(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
 

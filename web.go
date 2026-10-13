@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // The web UI and its icons are built into the binary. The UI talks only to
@@ -53,10 +52,6 @@ func fingerprint(page []byte, base string) []byte {
 func (a *App) webHandler() http.Handler {
 	files := http.FileServerFS(webFiles)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if d := a.store.Get().Decoy; d.Enabled {
-			serveDecoy(w, r, d.Page)
-			return
-		}
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -84,26 +79,11 @@ func (a *App) webHandler() http.Handler {
 	})
 }
 
-// setupAllowed reports whether the setup page and its files may be served for
-// this token. With the decoy on, only a live setup link gets past the decoy.
-func (a *App) setupAllowed(token string) bool {
-	cfg := a.store.Get()
-	if !cfg.Decoy.Enabled {
-		return true
-	}
-	p := cfg.peerByToken(token)
-	return p != nil && !p.Setup.expired(time.Now())
-}
-
 // setupPage serves the page a setup link opens. The token stays in the URL;
 // setup.js reads it from there and talks to /api/v1/setup. The page loads its
-// files from under the link, so they work while the decoy hides the root.
+// files from under the link, so they work while Stealth hides the root.
 func (a *App) setupPage(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	if !a.setupAllowed(token) {
-		serveDecoy(w, r, a.store.Get().Decoy.Page)
-		return
-	}
 	b, err := webFiles.ReadFile("setup.html")
 	if err != nil {
 		slog.Error("setup page", "err", err)
@@ -123,10 +103,6 @@ func (a *App) setupAsset(w http.ResponseWriter, r *http.Request) {
 	case "setup.js", "app.css", "favicon.svg", "apple-touch-icon.png", "ShipporiMinchoB1-ExtraBold.woff2":
 	default:
 		a.webHandler().ServeHTTP(w, r)
-		return
-	}
-	if !a.setupAllowed(r.PathValue("token")) {
-		serveDecoy(w, r, a.store.Get().Decoy.Page)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

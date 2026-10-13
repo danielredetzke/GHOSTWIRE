@@ -36,6 +36,7 @@ type App struct {
 	webAddrs []string // the addresses the web server listens on now
 	endpoint endpointIPs
 	dns      *dnsRouter // this service's DNS servers; nil in tests
+	stealth  stealthGate
 }
 
 // --- helpers ---
@@ -57,6 +58,14 @@ func writeErr(w http.ResponseWriter, err error) {
 		slog.Error("request failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error; the details are in the log"})
 	}
+}
+
+// hostOnly drops the port from a Host header.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
 }
 
 func readJSON(r *http.Request, v any) error {
@@ -206,7 +215,7 @@ func (a *App) routes() http.Handler {
 	mux.Handle("/", a.webHandler())
 
 	csrf := http.NewCrossOriginProtection()
-	return securityHeaders(csrf.Handler(mux))
+	return a.stealthHTTP(securityHeaders(csrf.Handler(mux)))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -341,11 +350,14 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) status(w http.ResponseWriter, r *http.Request) {
 	cfg := a.store.Get()
-	var online, enabled, never int
+	var online, enabled, never, managers int
 	var top string
 	var topBytes int64
 	for _, p := range cfg.Peers {
 		s := a.stats.Summary(p.ID)
+		if p.manages() {
+			managers++
+		}
 		if p.Enabled {
 			enabled++
 			if s.Online {
@@ -396,6 +408,7 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		"traffic30d": map[string]int64{"down": d30, "up": u30},
 		"topPeer30d": top,
 		"visitor":    a.visitor(r, cfg),
+		"stealth":    map[string]any{"on": cfg.Stealth.Enabled, "managers": managers, "closed24h": a.stealth.closed24h()},
 	})
 }
 
@@ -700,6 +713,8 @@ type peerView struct {
 	EffAllowed   []string    `json:"effectiveAllowedIPs"`
 	EffKeepalive int         `json:"effectiveKeepalive"`
 	LatencyCheck string      `json:"latencyCheck"` // off | active | always
+	Manage       bool        `json:"manage"`
+	FullTunnel   bool        `json:"fullTunnel"` // the device sends all IPv4 traffic through the tunnel
 	Created      time.Time   `json:"created"`
 	ConfigIssued *time.Time  `json:"configIssued"`
 	Setup        *setupView  `json:"setup"` // null = no pending setup link
@@ -711,8 +726,8 @@ func (a *App) peerView(c *Config, p *Peer) peerView {
 		ID: p.ID, Name: p.Name, Note: p.Note, Enabled: p.Enabled, PublicKey: p.PublicKey,
 		HasPSK: p.PresharedKey != "", IPv4: p.IPv4, DNS: p.DNS, AllowedIPs: p.AllowedIPs, Keepalive: p.Keepalive,
 		EffDNS: peerDNS(c, p), EffAllowed: peerAllowedIPs(c, p), EffKeepalive: peerKeepalive(c, p),
-		LatencyCheck: cmp.Or(p.LatencyCheck, "off"),
-		Created:      p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
+		LatencyCheck: cmp.Or(p.LatencyCheck, "off"), Manage: p.Manage, FullTunnel: fullTunnel(peerAllowedIPs(c, p), false),
+		Created: p.Created, ConfigIssued: p.ConfigIssued, Setup: viewSetup(p.Setup), Stats: a.stats.Summary(p.ID),
 	}
 	if c.Server.IPv6Enabled {
 		v.IPv6 = peerIPv6(c, p).String()
@@ -883,9 +898,14 @@ func (a *App) patchPeer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if _, ok := m["manage"]; ok && !who(r).IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "API tokens cannot change management access; sign in to the web interface"})
+		return
+	}
 	var name string
 	var changed []string
 	err = a.store.Update(func(c *Config) error {
+		old := c.clone()
 		_, p := c.peerByID(id)
 		if p == nil {
 			return badRequest("no such peer")
@@ -894,7 +914,7 @@ func (a *App) patchPeer(w http.ResponseWriter, r *http.Request) {
 			key string
 			dst any
 		}{
-			{"name", &p.Name}, {"note", &p.Note}, {"ipv4", &p.IPv4}, {"enabled", &p.Enabled},
+			{"name", &p.Name}, {"note", &p.Note}, {"ipv4", &p.IPv4}, {"enabled", &p.Enabled}, {"manage", &p.Manage},
 		} {
 			if raw, ok := m[f.key]; ok {
 				if err := json.Unmarshal(raw, f.dst); err != nil {
@@ -940,7 +960,7 @@ func (a *App) patchPeer(w http.ResponseWriter, r *http.Request) {
 		p.Name = strings.TrimSpace(p.Name)
 		p.Note = strings.TrimSpace(p.Note)
 		name = p.Name
-		return nil
+		return keepAccess(r, old, c)
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -957,12 +977,13 @@ func (a *App) setEnabled(on bool) http.HandlerFunc {
 		id := r.PathValue("id")
 		var name string
 		if err := a.store.Update(func(c *Config) error {
+			old := c.clone()
 			_, p := c.peerByID(id)
 			if p == nil {
 				return badRequest("no such peer")
 			}
 			p.Enabled, name = on, p.Name
-			return nil
+			return keepAccess(r, old, c)
 		}); err != nil {
 			writeErr(w, err)
 			return
@@ -983,8 +1004,9 @@ func (a *App) deletePeer(w http.ResponseWriter, r *http.Request) {
 			return badRequest("no such peer")
 		}
 		name = p.Name
+		old := c.clone()
 		c.Peers = slices.Delete(c.Peers, i, i+1)
-		return nil
+		return keepAccess(r, old, c)
 	}); err != nil {
 		writeErr(w, err)
 		return
@@ -1078,7 +1100,8 @@ func (a *App) getSettings(w http.ResponseWriter, r *http.Request) {
 		"web":         cfg.Web,
 		"log":         cfg.Log,
 		"stats":       cfg.Stats,
-		"decoy":       cfg.Decoy,
+		"stealth":     cfg.Stealth,
+		"access":      accessFor(cfg, r),
 		"signin":      cfg.SignIn,
 		"geo":         a.geoStatus(),
 		"updates":     a.updates.Status(),
@@ -1098,8 +1121,14 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "API tokens cannot change the sign-in rules; sign in to the web interface"})
 		return
 	}
+	if _, ok := m["stealth"]; ok && !who(r).IsAdmin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "API tokens cannot change Stealth; sign in to the web interface"})
+		return
+	}
 	var restart bool
+	var stealthWas, stealthNow bool
 	err = a.store.Update(func(c *Config) error {
+		old := c.clone()
 		// Session length applies to the next sign-in; everything else in
 		// web needs a restart.
 		listen := func() string {
@@ -1120,9 +1149,13 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 		if err := field(m, "stats", &c.Stats); err != nil {
 			return err
 		}
-		if err := field(m, "decoy", &c.Decoy); err != nil {
+		if err := field(m, "stealth", &c.Stealth); err != nil {
 			return err
 		}
+		if err := keepAccess(r, old, c); err != nil {
+			return err
+		}
+		stealthWas, stealthNow = old.Stealth.Enabled, c.Stealth.Enabled
 		if err := field(m, "signin", &c.SignIn); err != nil {
 			return err
 		}
@@ -1140,7 +1173,12 @@ func (a *App) patchSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	a.applyRuntime(a.store.Get())
 	a.audit(r, "app settings changed", "restartRequired", restart)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restartRequired": restart})
+	var applyErr string
+	if stealthWas != stealthNow {
+		a.audit(r, map[bool]string{true: "stealth on", false: "stealth off"}[stealthNow])
+		applyErr = a.apply() // the firewall's anti-spoof rules
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "restartRequired": restart, "applyError": applyErr})
 }
 
 func (a *App) restart(w http.ResponseWriter, r *http.Request) {
@@ -1278,9 +1316,12 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.store.Update(func(c *Config) error {
-		old := c.Web
+		old := c.clone()
 		*c = in
-		return a.checkWebStart(old, c.Web)
+		if err := keepAccess(r, old, c); err != nil {
+			return err
+		}
+		return a.checkWebStart(old.Web, c.Web)
 	}); err != nil {
 		writeErr(w, err)
 		return
