@@ -432,8 +432,8 @@ Settings → Pair iOS app: scan the QR code, or tap "Copy pairing code" and past
 it into the app's "Enter manually". Self-signed certificates are pinned during
 pairing.
 
-The iOS app is currently in beta testing. For an invite, email
-[engineroom@redetzke.aero](mailto:engineroom@redetzke.aero).
+The iOS app is available in the Apple App Store as
+"GHOSTWIRE - Companion App".
 
 ## Development
 
