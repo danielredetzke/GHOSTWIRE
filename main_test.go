@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2142,5 +2143,126 @@ func TestWriteErrHidesInternalErrors(t *testing.T) {
 	writeErr(rec, badRequest("name must be 1–32 characters"))
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "name must be") {
 		t.Fatalf("400 answer lost its message: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPublicBase(t *testing.T) {
+	for _, c := range []struct {
+		name, remote string
+		tls          bool
+		hdr          map[string]string
+		want         string
+	}{
+		{"plain, direct", "192.0.2.7:5000", false, nil, "http://vpn.example.net"},
+		{"tls, direct", "192.0.2.7:5000", true, nil, "https://vpn.example.net"},
+		{"browser on the server", "127.0.0.1:5000", false, nil, "http://vpn.example.net"},
+		{"proxy without proto", "127.0.0.1:5000", false, map[string]string{"X-Forwarded-For": "198.51.100.4"}, "https://vpn.example.net"},
+		{"proxy says https", "[::1]:5000", false, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "https"}, "https://vpn.example.net"},
+		{"proxy says http", "127.0.0.1:5000", false, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "HTTP"}, "http://vpn.example.net"},
+		{"proxy chain, last says http", "127.0.0.1:5000", false, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "https, http"}, "http://vpn.example.net"},
+		{"proto only", "127.0.0.1:5000", false, map[string]string{"X-Forwarded-Proto": "https"}, "https://vpn.example.net"},
+		{"tls proxy says http", "127.0.0.1:5000", true, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "http"}, "http://vpn.example.net"},
+		// Forwarding headers count only from loopback.
+		{"spoofed https", "192.0.2.7:5000", false, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "https"}, "http://vpn.example.net"},
+		{"spoofed http", "192.0.2.7:5000", true, map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "http"}, "https://vpn.example.net"},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Host, r.RemoteAddr = "vpn.example.net", c.remote
+		if c.tls {
+			r.TLS = &tls.ConnectionState{}
+		}
+		for k, v := range c.hdr {
+			r.Header.Set(k, v)
+		}
+		if got := publicBase(r); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// The pairing code and setup links carry the address the admin used, also
+// behind a reverse proxy.
+func TestPairingAddress(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := hashPassword("a long test password")
+	_ = store.Update(func(c *Config) error {
+		c.Users[0].PasswordHash = hash
+		c.Server.Endpoint = "vpn.example.net"
+		return nil
+	})
+	k := &fakeKernel{}
+	st, _ := openStats(filepath.Join(dir, "stats.json"), store, k)
+	cert := &x509.Certificate{Raw: []byte("certificate")}
+	app := &App{store: store, kernel: k, recon: newReconciler(k, store), stats: st, auth: newAuth(store),
+		tls: &webTLS{leaf: func() *x509.Certificate { return cert }}, logPath: filepath.Join(dir, "log.jsonl"), started: time.Now(), shutdown: func() {}}
+	srv := httptest.NewServer(app.routes())
+	defer srv.Close()
+	jar, _ := cookiejar.New(nil)
+	cl := &http.Client{Jar: jar}
+
+	call := func(method, path string, body any, hdr map[string]string, want int) map[string]any {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest(method, srv.URL+path, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		if resp.StatusCode != want {
+			t.Fatalf("%s %s: status %d, want %d: %v", method, path, resp.StatusCode, want, out)
+		}
+		return out
+	}
+	pairing := func(hdr map[string]string) (url, fingerprint string) {
+		t.Helper()
+		tok := call("POST", "/api/v1/tokens", map[string]string{"name": "phone"}, hdr, 201)
+		var p struct{ URL, Token, Fingerprint string }
+		if err := json.Unmarshal([]byte(tok["pairing"].(string)), &p); err != nil || p.Token != tok["token"] {
+			t.Fatalf("bad pairing %v: %v", tok["pairing"], err)
+		}
+		return p.URL, p.Fingerprint
+	}
+	call("POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "a long test password"}, nil, 200)
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	proxy := map[string]string{"X-Forwarded-For": "198.51.100.4"}
+	plainProxy := map[string]string{"X-Forwarded-For": "198.51.100.4", "X-Forwarded-Proto": "http"}
+
+	// Direct: the address as used, and the certificate to pin.
+	if u, fp := pairing(nil); u != srv.URL || fp != app.tls.Fingerprint() || fp == "" {
+		t.Fatalf("direct: %s %q", u, fp)
+	}
+	// Through a proxy: HTTPS unless the proxy says otherwise, and nothing to
+	// pin, as the app sees the proxy's certificate.
+	if u, fp := pairing(proxy); u != "https://"+host || fp != "" {
+		t.Fatalf("proxy: %s %q", u, fp)
+	}
+	if u, fp := pairing(plainProxy); u != "http://"+host || fp != "" {
+		t.Fatalf("plain proxy: %s %q", u, fp)
+	}
+
+	link := func(name string, hdr map[string]string) string {
+		t.Helper()
+		return call("POST", "/api/v1/peers", map[string]any{"name": name, "delivery": "link"}, hdr, 201)["setup"].(map[string]any)["url"].(string)
+	}
+	if u := link("direct", nil); !strings.HasPrefix(u, srv.URL+"/setup/") {
+		t.Fatalf("direct link: %s", u)
+	}
+	if u := link("proxied", proxy); !strings.HasPrefix(u, "https://"+host+"/setup/") {
+		t.Fatalf("proxied link: %s", u)
+	}
+	if u := link("plain", plainProxy); !strings.HasPrefix(u, "http://"+host+"/setup/") {
+		t.Fatalf("plain proxied link: %s", u)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -105,15 +106,33 @@ type setupSecret struct {
 	QR      string    `json:"qr"`
 }
 
-// setupBase is the scheme and host the admin reached this server with.
-// Behind a local reverse proxy, X-Forwarded-Proto tells whether that was
-// HTTPS.
-func setupBase(r *http.Request) string {
+// publicBase is the scheme and host the admin reached this server with, for
+// setup links and pairing codes. A local reverse proxy holds the
+// certificate, so a request through it counts as HTTPS unless the proxy
+// says X-Forwarded-Proto: http.
+func publicBase(r *http.Request) string {
 	scheme := "http"
-	if r.TLS != nil || (fromLoopback(r) && r.Header.Get("X-Forwarded-Proto") == "https") {
+	if viaProxy(r) {
+		if p := r.Header.Values("X-Forwarded-Proto"); len(p) == 0 || !strings.EqualFold(lastListEntry(p[len(p)-1]), "http") {
+			scheme = "https"
+		}
+	} else if r.TLS != nil {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host
+}
+
+// viaProxy reports whether r came through a local reverse proxy: from
+// loopback with forwarding headers. A browser on the server itself sends
+// none.
+func viaProxy(r *http.Request) bool {
+	return fromLoopback(r) && (r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Forwarded-Proto") != "")
+}
+
+// lastListEntry is the last item of a comma-separated header value.
+func lastListEntry(v string) string {
+	list := strings.Split(v, ",")
+	return strings.TrimSpace(list[len(list)-1])
 }
 
 func fromLoopback(r *http.Request) bool {
@@ -127,7 +146,7 @@ func fromLoopback(r *http.Request) bool {
 
 func secretFor(r *http.Request, s *SetupLink) (setupSecret, error) {
 	path := "/setup/" + s.Token
-	out := setupSecret{URL: setupBase(r) + path, Path: path, PIN: s.PIN, Expires: s.Expires}
+	out := setupSecret{URL: publicBase(r) + path, Path: path, PIN: s.PIN, Expires: s.Expires}
 	qr, err := qrDataURL(out.URL)
 	if err != nil {
 		return out, err

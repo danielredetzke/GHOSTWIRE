@@ -1231,8 +1231,14 @@ func (a *App) createToken(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "api token created", "token", t.Name, "scope", t.Scope)
 	// The pairing payload lets the iOS app connect by scanning one QR code.
+	// Behind a reverse proxy the app sees the proxy's certificate, not ours,
+	// so there is nothing to pin.
+	fingerprint := ""
+	if !viaProxy(r) {
+		fingerprint = a.tls.Fingerprint()
+	}
 	pairing, _ := json.Marshal(map[string]string{
-		"url": "https://" + r.Host, "token": secret, "fingerprint": a.tls.Fingerprint(),
+		"url": publicBase(r), "token": secret, "fingerprint": fingerprint,
 	})
 	qr, _ := qrDataURL(string(pairing))
 	writeJSON(w, http.StatusCreated, map[string]any{
