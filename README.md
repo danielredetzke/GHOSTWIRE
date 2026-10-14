@@ -424,7 +424,7 @@ override a drop in another table, so if ufw or firewalld is active, allow UDP
 
 ## iOS app
 
-The native iPhone app (SwiftUI, iOS 17+) lives in its own project,
+The native iPhone app (SwiftUI, iOS 18.6+) lives in its own project,
 GHOSTWIRE-Companion. It manages peers, the server and the app settings and
 shows stats and logs. Users, passwords, API tokens, two-step sign-in, backup
 and restore stay in the web interface. Pair it in the web interface under
