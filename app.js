@@ -158,6 +158,14 @@
     return [g.countryName || g.country, g.network].filter(Boolean).join(' · ');
   }
 
+  // The address of an endpoint without its port: "1.2.3.4:51820" → "1.2.3.4",
+  // "[2001:db8::1]:51820" → "2001:db8::1", with break chances after the
+  // colons so an IPv6 address can wrap instead of widening a table.
+  function epHost(ep) {
+    const host = ep.startsWith('[') ? ep.slice(1, ep.indexOf(']')) : ep.slice(0, ep.lastIndexOf(':'));
+    return host.split(':').flatMap((part, i) => i ? [':', h('wbr'), part] : [part]);
+  }
+
   function fmtDuration(sec) {
     if (sec < 60) return 'under 1 min';
     const m = Math.round(sec / 60);
@@ -1529,7 +1537,7 @@
         h('td', null, peerLink(p), p.manage ? h('div', null, h('span', { class: 'tag plain mtag', title: 'Can open the web interface while Stealth is on' }, 'Management')) : null, p.note ? h('div', { class: 'note' }, p.note) : null),
         h('td', { class: 'mono' }, p.ipv4),
         h('td', null, badge(peerState(p))),
-        h('td', { class: 'mono muted' }, p.stats.endpoint || '–',
+        h('td', { class: 'mono muted', title: p.stats.endpoint || null }, p.stats.endpoint ? epHost(p.stats.endpoint) : '–',
           p.stats.location && p.stats.location.country ? h('span', { class: 'cc', title: fmtLocation(p.stats.location) }, p.stats.location.country) : null),
         latCell(p),
         h('td', { class: 'num' }, fmtBytes(p.stats.down30d)),
